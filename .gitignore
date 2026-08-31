@@ -1,0 +1,28 @@
+# Secrets and local identity state (NEVER commit) -----------------------------
+# The dashboard's owner key, the agent seed, the task secret, nonces, grants.
+dashboard/state/
+**/*.pem
+**/*.passphrase
+**/owner.passphrase
+
+# Dependencies and build state ------------------------------------------------
+node_modules/
+.wrangler/
+agent/.wrangler/
+
+# Python caches ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS and editor ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Local logs / scratch --------------------------------------------------------
+*.log

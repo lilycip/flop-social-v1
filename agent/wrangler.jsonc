@@ -1,0 +1,48 @@
+{
+  // The GATEWAY worker hosts the Governor Durable Object (SQLite-backed, so the
+  // reserve-before-emit read-check-write is synchronous and atomic; DESIGN.md §4).
+  // Step 1 only exercises the DO; the gateway RPC surface comes in step 2.
+  "name": "flop-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-07-01",
+
+  // The gateway is the KEY VAULT and is RPC-only (its fetch handler returns 404 by design; the agent
+  // reaches it over an internal service binding, never a URL). A public workers.dev route is therefore
+  // pure attack surface on the one box that holds the identity key, so it is disabled: no public URL exists.
+  "workers_dev": false,
+
+  // The gateway's OWN cron (DESIGN.md §5): every minute it polls the owner's grant slot and applies the
+  // newest signed grant/STOP via the Governor, INDEPENDENT of the agent's work-wake, so a revoke (the
+  // kill switch) lands within ~1 min even if the agent isolate is wedged. Without this trigger the
+  // scheduled() revoke-poll never runs and a STOP would only take effect on the agent's next model-gated
+  // wake - so this is a security-relevant binding, not a nicety.
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "GOVERNOR", "class_name": "Governor" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Governor"] }
+  ],
+
+  // The NATIVE Workers AI binding: the gateway's model brain, on the free tier, with NO credential to
+  // set or leak. Cloudflare provisions it on deploy, so a fresh user does nothing for the model.
+  "ai": {
+    "binding": "AI"
+  },
+
+  // Non-secret deploy config. The only SECRETS (KEY_SEED, TASK_SECRET) are set via `wrangler secret put`,
+  // NEVER here - there is NO model credential any more (the AI binding replaced it). OUR_DID is this
+  // agent's own did:key and MUST match the KEY_SEED secret or the gateway refuses to boot. OWNER_DID is
+  // the human owner's PUBLIC did:key; it only ADDRESSES the grant + task slots (the Governor still gates
+  // every grant against its configured owner_pub, so a wrong OWNER_DID just points at an empty slot).
+  "vars": {
+    "OUR_DID": "",
+    "OWNER_DID": "",
+    "MODEL_NAME": "@cf/meta/llama-3.1-8b-instruct"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "seg": {
+    "kibble": "kibble",
+    "room-owners": "room-owners",
+    "a/b c": "a%2Fb%20c",
+    "did:key:z6MkTest": "did%3Akey%3Az6MkTest",
+    "!*'()~-_.": "%21%2A%27%28%29~-_.",
+    "100% & more": "100%25%20%26%20more",
+    "café": "caf%C3%A9",
+    "hb-agent": "hb-agent",
+    "a=b&c=d": "a%3Db%26c%3Dd",
+    "tab\there": "tab%09here",
+    "x|y": "x%7Cy",
+    "空": "%E7%A9%BA",
+    "  spaces  ": "%20%20spaces%20%20"
+  },
+  "urls": {
+    "room_read_plain": "https://technocore.chat/r/kibble?format=json",
+    "room_read_since": "https://technocore.chat/r/kibble?format=json&since=42&wait=5",
+    "room_read_weird": "https://technocore.chat/r/a%2Fb%20c?format=json",
+    "note_get": "https://technocore.chat/kv/did-abcd/link",
+    "note_set": "https://technocore.chat/kv/room-x/hb-agent/set/alive%20%40%20t",
+    "note_set_signed": "https://technocore.chat/kv/did-abcd/link/set-signed/did%3Akey%3Az6MkX/SIG_b64url/17/value%2Fwith%20slash",
+    "say_signed": "https://technocore.chat/r/kibble/say-signed/did%3Akey%3Az6MkX/SIG%3D%3D/19/CLAIM%20%7C%20job%3Dabc%2Fdef"
+  }
+}

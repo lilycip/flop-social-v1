@@ -1,0 +1,573 @@
+{
+  "note": "Golden GRANT vectors from the audited shared/ code. The TS Governor port must reproduce grant_message byte-for-byte and verify_grant/grant_class/auto_ceiling branch-for-branch. Regenerate with agent/tools/gen_grant_vectors.py.",
+  "owner_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+  "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+  "owner_pub_raw_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+  "agent_seed_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+  "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+  "other_did": "did:key:z6MkvRXNYcE7MMduynWTgeKbDaT1iijDSC8pZqXZc8rHPrf2",
+  "did_vectors": [
+    {
+      "seed_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "pub_raw_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    },
+    {
+      "seed_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "pub_raw_hex": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394"
+    }
+  ],
+  "message_vectors": [
+    {
+      "grant_id": "g1",
+      "issued": 1000,
+      "expiry": 2000,
+      "window": 86400,
+      "allow": {
+        "CLAIM": 5,
+        "RESULT": 5,
+        "ATTEST:useful:board-match": 3,
+        "ATTEST:not": 3,
+        "NOTE_WRITE:note": 2
+      },
+      "message_utf8": "grant|g1|did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX|agent:did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH|issued:1000|exp:2000|window:86400|allow:ATTEST:not=3,ATTEST:useful:board-match=3,CLAIM=5,NOTE_WRITE:note=2,RESULT=5"
+    },
+    {
+      "grant_id": "g2",
+      "issued": 0,
+      "expiry": 9999999999,
+      "window": 3600,
+      "allow": {},
+      "message_utf8": "grant|g2|did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX|agent:did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH|issued:0|exp:9999999999|window:3600|allow:"
+    },
+    {
+      "grant_id": "g3",
+      "issued": 5,
+      "expiry": 10,
+      "window": 86400,
+      "allow": {
+        "RESULT": 1
+      },
+      "message_utf8": "grant|g3|did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX|agent:did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH|issued:5|exp:10|window:86400|allow:RESULT=1"
+    }
+  ],
+  "good_grant": {
+    "grant_id": "g1",
+    "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+    "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+    "issued": "1000",
+    "expiry": "2000",
+    "window": "86400",
+    "allow": {
+      "CLAIM": 5,
+      "RESULT": 5,
+      "ATTEST:useful:board-match": 3,
+      "ATTEST:not": 3,
+      "NOTE_WRITE:note": 2
+    },
+    "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+  },
+  "verify_vectors": [
+    {
+      "name": "valid",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 5,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 1500,
+      "revoked": [],
+      "expected_agent": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "want": true
+    },
+    {
+      "name": "valid_at_issue",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 5,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 1000,
+      "revoked": [],
+      "expected_agent": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "want": true
+    },
+    {
+      "name": "expired",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 5,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 2001,
+      "revoked": [],
+      "expected_agent": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "want": false
+    },
+    {
+      "name": "at_expiry_boundary",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 5,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 2000,
+      "revoked": [],
+      "expected_agent": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "want": true
+    },
+    {
+      "name": "revoked",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 5,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 1500,
+      "revoked": [
+        "g1"
+      ],
+      "expected_agent": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "want": false
+    },
+    {
+      "name": "wrong_expected_agent",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 5,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 1500,
+      "revoked": [],
+      "expected_agent": "did:key:z6MkvRXNYcE7MMduynWTgeKbDaT1iijDSC8pZqXZc8rHPrf2",
+      "want": false
+    },
+    {
+      "name": "missing_expected_agent",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 5,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 1500,
+      "revoked": [],
+      "expected_agent": "",
+      "want": false
+    },
+    {
+      "name": "tampered_signature",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 5,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "AMqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 1500,
+      "revoked": [],
+      "expected_agent": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "want": false
+    },
+    {
+      "name": "tampered_allow",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 999,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 1500,
+      "revoked": [],
+      "expected_agent": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "want": false
+    },
+    {
+      "name": "wrong_owner_did",
+      "grant": {
+        "grant_id": "g1",
+        "owner_did": "did:key:z6MkvRXNYcE7MMduynWTgeKbDaT1iijDSC8pZqXZc8rHPrf2",
+        "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+        "issued": "1000",
+        "expiry": "2000",
+        "window": "86400",
+        "allow": {
+          "CLAIM": 5,
+          "RESULT": 5,
+          "ATTEST:useful:board-match": 3,
+          "ATTEST:not": 3,
+          "NOTE_WRITE:note": 2
+        },
+        "signature": "8Mqg3YYi3TCLLWwfE60g9_T2PJA1LpoPHOXdNieSba_l7zXeFEaFW6xu5apgTum6WHHl6aHRqFPHVDn7dWXfAA"
+      },
+      "now": 1500,
+      "revoked": [],
+      "expected_agent": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "want": false
+    }
+  ],
+  "ceiling_vectors": [
+    {
+      "verb": "CLAIM",
+      "target": {
+        "job_id": "job-x"
+      },
+      "verdict": null,
+      "board_match": false,
+      "klass": "CLAIM",
+      "ceiling": 5
+    },
+    {
+      "verb": "RESULT",
+      "target": {
+        "job_id": "job-x",
+        "result": "hi"
+      },
+      "verdict": null,
+      "board_match": false,
+      "klass": "RESULT",
+      "ceiling": 5
+    },
+    {
+      "verb": "ATTEST",
+      "target": {
+        "job_id": "job-x",
+        "result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "verdict": {
+        "useful": true
+      },
+      "board_match": true,
+      "klass": "ATTEST:useful:board-match",
+      "ceiling": 3
+    },
+    {
+      "verb": "ATTEST",
+      "target": {
+        "job_id": "job-x",
+        "result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "verdict": {
+        "useful": true
+      },
+      "board_match": false,
+      "klass": "ATTEST:useful:no-board-match",
+      "ceiling": null
+    },
+    {
+      "verb": "ATTEST",
+      "target": {
+        "job_id": "job-x",
+        "result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "verdict": {
+        "useful": false
+      },
+      "board_match": false,
+      "klass": "ATTEST:not",
+      "ceiling": 3
+    },
+    {
+      "verb": "NOTE_WRITE",
+      "target": {
+        "namespace": "notes",
+        "key": "k",
+        "value": "v"
+      },
+      "verdict": null,
+      "board_match": false,
+      "klass": "NOTE_WRITE:note",
+      "ceiling": 2
+    },
+    {
+      "verb": "NOTE_WRITE",
+      "target": {
+        "namespace": "did-94",
+        "key": "k",
+        "value": "v"
+      },
+      "verdict": null,
+      "board_match": false,
+      "klass": "NOTE_WRITE:identity",
+      "ceiling": null
+    },
+    {
+      "verb": "SAY",
+      "target": {
+        "room": "lobby",
+        "text": "hi"
+      },
+      "verdict": null,
+      "board_match": false,
+      "klass": "SAY",
+      "ceiling": null
+    }
+  ],
+  "dangerous_vectors": [
+    {
+      "klass": "ATTEST:useful:no-board-match",
+      "dangerous": true
+    },
+    {
+      "klass": "NOTE_WRITE:identity",
+      "dangerous": true
+    },
+    {
+      "klass": "NOTE_WRITE:ownership",
+      "dangerous": true
+    },
+    {
+      "klass": "CLAIM",
+      "dangerous": false
+    },
+    {
+      "klass": "RESULT",
+      "dangerous": false
+    },
+    {
+      "klass": "ATTEST:useful:board-match",
+      "dangerous": false
+    },
+    {
+      "klass": "OTHER:FOO",
+      "dangerous": true
+    },
+    {
+      "klass": "x:unknown",
+      "dangerous": true
+    }
+  ],
+  "governor_grants": {
+    "main": {
+      "grant_id": "g-main",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "1000",
+      "expiry": "4000000000",
+      "window": "86400",
+      "allow": {
+        "CLAIM": 5,
+        "RESULT": 5,
+        "ATTEST:not": 3,
+        "NOTE_WRITE:note": 2,
+        "MODEL": 2
+      },
+      "signature": "97pid1O7H8zOXGbXxPWo32u64YzpPSzVgIngrooVFWMv5tbe3el6ogDv5jUWBe7LpadI8ZF3uA3wE6G8MRo5DA"
+    },
+    "claim1": {
+      "grant_id": "g-claim1",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "1000",
+      "expiry": "4000000000",
+      "window": "86400",
+      "allow": {
+        "CLAIM": 1
+      },
+      "signature": "oPbYKX3VgBwWX8kTi-WDv0QERcuUbd4UUQ4Th_YzGE5xeVvMFrHFsVRCoH4MoetEdqAD_uSWZ0OPGYWq0v7NDg"
+    },
+    "win600": {
+      "grant_id": "g-win600",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "1000",
+      "expiry": "4000000000",
+      "window": "600",
+      "allow": {
+        "CLAIM": 1
+      },
+      "signature": "_b8XEB6Cu3vOPYozZTTc8H-43uB72sXnMF1WWzfy3HFy_9sNVF1mXe9eUpwLehoXPok36EI-kEWj83g5hsHlAQ"
+    },
+    "winsmall": {
+      "grant_id": "g-winsmall",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "1000",
+      "expiry": "4000000000",
+      "window": "100",
+      "allow": {
+        "CLAIM": 1
+      },
+      "signature": "wfeREn0Oaul5h3F3jsvOBD8h0BjlKKu3xyVmUstAnMAY7WA3G2ZyCZC_U0db7Lvnku_LCOhFnTK9imPuJc2zDA"
+    },
+    "expired": {
+      "grant_id": "g-expired",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "1000",
+      "expiry": "2000",
+      "window": "86400",
+      "allow": {
+        "CLAIM": 5
+      },
+      "signature": "4o1drLPTs324-iw7Tq0qVcbozW4AY6x94Ib0xha5duCpyq7qOuaKxa2XvDRd2nrOWsgC_PusSh7mIoIdDbjHAQ"
+    },
+    "wrong_agent": {
+      "grant_id": "g-wrongagent",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6MkvRXNYcE7MMduynWTgeKbDaT1iijDSC8pZqXZc8rHPrf2",
+      "issued": "1000",
+      "expiry": "4000000000",
+      "window": "86400",
+      "allow": {
+        "CLAIM": 5
+      },
+      "signature": "K6MWYM0cAeXItGky37uFB-m9ciQ9UpfIZWfAVjHMDQcMSBGpl3wJbxzySnoDGNgLM094OmetN5Kl6B-fSbzxBA"
+    },
+    "newer": {
+      "grant_id": "g-newer",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "2000",
+      "expiry": "4000000000",
+      "window": "86400",
+      "allow": {
+        "CLAIM": 1
+      },
+      "signature": "xKTkrCud6RW2WyCLLCyNDUwFzjGUd-Lu4-Y83JwTYi1OSz2WRTtBfxARBAvdfhlHc2hgRFm6LI2t9e1kFj5nDQ"
+    },
+    "stop": {
+      "grant_id": "g-stop",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "3000",
+      "expiry": "4000000000",
+      "window": "86400",
+      "allow": {},
+      "signature": "rLI8_haqM1_y04anmcSGYjVkk9QrZVeKHyOLffPPU2mgoL5Syv7_gSHpRE3yvQZfXga2WBq6KP-j8KPzM7BKDQ"
+    },
+    "older": {
+      "grant_id": "g-older",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "500",
+      "expiry": "4000000000",
+      "window": "86400",
+      "allow": {
+        "CLAIM": 5,
+        "MODEL": 5
+      },
+      "signature": "xhHuap1ck_PjA9h8vmTp1L06Oigpkzt8GjeJ2VhuX68-j0k1MUSusXPoRrBaVOcjibK57VV2QbF9fahiGO5ACQ"
+    },
+    "future": {
+      "grant_id": "g-future",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "900000000000000000",
+      "expiry": "4000000000",
+      "window": "86400",
+      "allow": {
+        "CLAIM": 1
+      },
+      "signature": "sLZ-SroqWM6LIFdZ5TLSDquZVWmzNLBBIvR9Omgyu8ephprXN01vrMIsHVeAz51UDAtFssb2KNtDXUcM4ZOwAQ"
+    },
+    "prod": {
+      "grant_id": "g-prod",
+      "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+      "agent_did": "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH",
+      "issued": "1000",
+      "expiry": "4102444800",
+      "window": "86400",
+      "allow": {
+        "CLAIM": 1
+      },
+      "signature": "eR3pKuAQKYTq2qLEjhIorCo58MqFUtJBK_r5d6un2LHiKNsiq-3-fGxR_HEY-kmCkw9F5xOFFdwmJy6aM7fnBw"
+    }
+  }
+}

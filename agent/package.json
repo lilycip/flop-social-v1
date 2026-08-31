@@ -1,0 +1,22 @@
+{
+  "name": "flop-agent",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The FLOP protocol agent: three Cloudflare isolates (gateway + agent + sandbox) + a Governor Durable Object. Built from agent/DESIGN.md. Step 1: the Governor DO.",
+  "scripts": {
+    "test": "node tools/check_p1.test.mjs && node tools/check_p1.mjs && vitest run && vitest run --config vitest.prod.config.ts && vitest run --config vitest.agent.config.ts",
+    "check:p1": "node tools/check_p1.test.mjs && node tools/check_p1.mjs",
+    "test:testmode": "vitest run",
+    "test:prod": "vitest run --config vitest.prod.config.ts",
+    "test:agent": "vitest run --config vitest.agent.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.8.71",
+    "@cloudflare/workers-types": "^4.20250906.0",
+    "typescript": "^5.7.3",
+    "vitest": "~3.0.5",
+    "wrangler": "4.35.0"
+  }
+}

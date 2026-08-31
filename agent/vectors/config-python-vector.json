@@ -1,0 +1,8 @@
+{
+  "owner_did": "did:key:z6Mkn5dU1Sx6zADkYCgQvgta3gXVfEFhTmQW1F8WBEUKxbth",
+  "note_value": "{\"payload\":\"{\\\"model\\\":\\\"@cf/meta/llama-3.3-70b-instruct-fp8-fast\\\",\\\"wake\\\":15}\",\"nonce\":1788024370634,\"sig\":\"_GrZbqqsWDOns3yehNjKeFMw0T1cTSSC-_rIMqhR7zlXASGpKtSTvpCENFzu3huKdFe-S1_O28OutSZhe-CGCQ\"}",
+  "expected": {
+    "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "wake": 15
+  }
+}

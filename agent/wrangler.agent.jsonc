@@ -1,0 +1,62 @@
+{
+  // The AGENT worker (DESIGN.md §1). SEPARATE deployable from the gateway. It is the untrusted
+  // brain: it HOLDS NOTHING readable. Note what is DELIBERATELY ABSENT here - there is NO identity
+  // key, NO model credential, NO private room name, and NO Governor Durable Object binding. Its
+  // only powers are the gateway service binding (sign/complete) and, once wired, the Sandbox class.
+  "name": "flop-agent",
+  "main": "src/agent-index.ts",
+  "compatibility_date": "2025-07-01",
+
+  // Pull-based: woken ONLY by cron, nothing can push to it. A public workers.dev route would contradict
+  // that, so it is disabled - the agent has no public URL and is reachable by nothing but its own cron.
+  "workers_dev": false,
+
+  // Woken ONLY by cron (pull-based; nothing can push to it). A CHEAP 1/min HEARTBEAT: the agent wakes
+  // every minute but only THINKS (calls the model) on the owner's chosen wake interval - the throttle
+  // lives in agent-core runPass (resolveWakeMinutes + the memory last_think ledger), driven by the
+  // owner's SIGNED cost config (relayed by the gateway) or the WAKE_MINUTES var default. A throttled
+  // wake does no reads/model/emit (~0 neurons), so 1/min here is free, and model+wake change with NO
+  // redeploy (Francisco's locked decision). This 1/min value is also what the preflight requires be
+  // non-empty. The gateway's own 1/min kill-switch poll is separate (wrangler.jsonc).
+  // NOTE: Jarvis is paused at the LIVE-worker level; resuming him = redeploy (this heartbeat is free).
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+
+  // The ONLY off-agent channel: RPC to the gateway WorkerEntrypoint. The gateway holds the key,
+  // the model credential, and the room names; the agent reaches them only through sign()/complete().
+  "services": [
+    { "binding": "GATEWAY", "service": "flop-gateway", "entrypoint": "Gateway" }
+  ],
+
+  // Non-secret config only. The research allowlist is DENY-BY-DEFAULT (empty => nothing fetchable);
+  // the technocore host is force-denied in code so the fetcher can never become a write channel.
+  "vars": {
+    "NICK": "myagent",
+    "RESEARCH_ALLOW_HOSTS": "",
+    "RESEARCH_DENY_HOSTS": "",
+    "TECHNOCORE_BASE": "",
+    "BUDGET_READS": "8",
+    "BUDGET_MODEL": "4",
+    "BUDGET_SANDBOX": "2",
+    "BUDGET_WRITES": "4",
+    "BUDGET_MEMORY": "4"
+  },
+
+  // The agent's MEMORY Durable Object (M1-M7). Bound to the AGENT worker ONLY, scoped to the AgentMemory
+  // class - NEVER the Governor. It holds no key and has no gateway/Governor binding; it is the agent's
+  // own bounded, poisoning-resistant store.
+  "durable_objects": {
+    "bindings": [
+      { "name": "MEMORY", "class_name": "AgentMemory" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AgentMemory"] }
+  ]
+
+  // TODO(live I/O): the Sandbox binding. On installing @cloudflare/sandbox, add its DO migration +
+  // a binding scoped to the Sandbox class ONLY (never the Governor):
+  //   "durable_objects": { "bindings": [ { "name": "SANDBOX", "class_name": "Sandbox", "script_name": "flop-agent" } ] }
+  // and the matching migration. The agent gets NO other DO binding.
+}

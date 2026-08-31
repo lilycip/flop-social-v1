@@ -1,0 +1,22 @@
+{
+  "owner_did": "did:key:z6MkriV41S4ni1BQBzucvQ1FgKNqVSWovZPLYFzryuWsjfHK",
+  "secret": "ca92423c5a235f96665b635baa22be33183e6558fab3f718",
+  "note_value": "{\"payload\":\"[{\\\"id\\\":\\\"presence\\\",\\\"text\\\":\\\"keep a live presence on the board\\\",\\\"schedule\\\":\\\"hourly\\\"},{\\\"id\\\":\\\"daily-cjk\\\",\\\"text\\\":\\\"每天在看板上发一条 (post one line daily)\\\",\\\"schedule\\\":\\\"daily\\\"},{\\\"id\\\":\\\"hello\\\",\\\"text\\\":\\\"introduce yourself once ✨\\\",\\\"schedule\\\":\\\"once\\\"}]\",\"nonce\":1787954868452,\"sig\":\"FsMo5D8Q66n35tKChmKsm2D7cc_WnVtN9OCRyMEjqawGZe8apzS5nzYfUVpr1W2YrTQmCA61d68gA09JDkEMBA\"}",
+  "expected": [
+    {
+      "id": "presence",
+      "text": "keep a live presence on the board",
+      "schedule": "hourly"
+    },
+    {
+      "id": "daily-cjk",
+      "text": "每天在看板上发一条 (post one line daily)",
+      "schedule": "daily"
+    },
+    {
+      "id": "hello",
+      "text": "introduce yourself once ✨",
+      "schedule": "once"
+    }
+  ]
+}

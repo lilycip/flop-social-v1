@@ -1,0 +1,111 @@
+{
+  "version": "v2",
+  "vectors": [
+    {
+      "verb": "ATTEST",
+      "target": {
+        "job_id": "job-abc123",
+        "result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "verdict": {
+        "useful": true
+      },
+      "action_string": "ATTEST v2 | job:job-abc123 | verdict:useful | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_commit": "5dd3f9bd888a23347aca677b822815e97b243691f0f3faf99c54fb1ab4e3adb9"
+    },
+    {
+      "verb": "ATTEST",
+      "target": {
+        "job_id": "job-abc123",
+        "result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "verdict": {
+        "useful": false
+      },
+      "action_string": "ATTEST v2 | job:job-abc123 | verdict:not | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "action_commit": "e7133091283178d95b42be3ac5a96d8e1e5ee003e73ed863ddd6e0002a8efc48"
+    },
+    {
+      "verb": "ATTEST",
+      "target": {
+        "job_id": "job-abc123",
+        "result_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "verdict": {
+        "useful": true
+      },
+      "action_string": "ATTEST v2 | job:job-abc123 | verdict:useful | rh:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "action_commit": "2be55a03bd9f246029e418fcaf1f83847fc1860461e58a07d63e44869ff92b8e"
+    },
+    {
+      "verb": "RESULT",
+      "target": {
+        "job_id": "job-abc123",
+        "result": "the delivered answer text"
+      },
+      "verdict": null,
+      "action_string": "RESULT v2 | job:job-abc123 | rh:f2d42a0c28729de310228520cfdc76fe5c0f8227cd6c60a22f0f93fd9d763add",
+      "action_commit": "e2e0b8bf00bcff665a8c135bdd9d2da064ad4fba441037d7a46accae5ec96d50"
+    },
+    {
+      "verb": "CLAIM",
+      "target": {
+        "job_id": "job-abc123"
+      },
+      "verdict": null,
+      "action_string": "CLAIM v2 | job:job-abc123",
+      "action_commit": "353493a0e95e25df32829a2929c3e12f7b8c27acea38d5c0947fc2028ae8a238"
+    },
+    {
+      "verb": "NOTE_WRITE",
+      "target": {
+        "namespace": "did-94",
+        "key": "d29ebc4b5d3f8a",
+        "value": "v1.4.0"
+      },
+      "verdict": null,
+      "action_string": "NOTE_WRITE v2 | ns:did-94 | key:d29ebc4b5d3f8a | vh:63556338d86370db835249c95d7be82a6faf40b39cbf43cb94ed25936834dae6",
+      "action_commit": "e832cddc44cff9fdb9502b260f2468360f74acf86ca510f8f47e6ff57294b6cf"
+    },
+    {
+      "verb": "SAY",
+      "target": {
+        "room": "lobby",
+        "text": "hello world"
+      },
+      "verdict": null,
+      "action_string": "SAY v2 | room:lobby | th:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "action_commit": "82fb58e190c1e168e9b6102650bce1ead5e25aadff98f5838824e81a791cb45f"
+    }
+  ],
+  "steer_vectors": [
+    {
+      "channel": "mb-p-deadbeef",
+      "nonce": "1",
+      "expiry": "1000",
+      "action_string": "ATTEST v2 | job:job-abc123 | verdict:useful | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "steer_message": "steer|mb-p-deadbeef|ATTEST v2 | job:job-abc123 | verdict:useful | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|nonce:1|exp:1000"
+    },
+    {
+      "channel": "mb-p-deadbeef",
+      "nonce": "9223372036854775807",
+      "expiry": "9999999999",
+      "action_string": "ATTEST v2 | job:job-abc123 | verdict:useful | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "steer_message": "steer|mb-p-deadbeef|ATTEST v2 | job:job-abc123 | verdict:useful | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|nonce:9223372036854775807|exp:9999999999"
+    },
+    {
+      "channel": "mb-p-deadbeef",
+      "nonce": "1",
+      "expiry": "1000",
+      "action_string": "SAY v2 | room:lobby | th:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "steer_message": "steer|mb-p-deadbeef|SAY v2 | room:lobby | th:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9|nonce:1|exp:1000"
+    },
+    {
+      "channel": "mb-p-deadbeef",
+      "nonce": "9223372036854775807",
+      "expiry": "9999999999",
+      "action_string": "SAY v2 | room:lobby | th:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "steer_message": "steer|mb-p-deadbeef|SAY v2 | room:lobby | th:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9|nonce:9223372036854775807|exp:9999999999"
+    }
+  ]
+}

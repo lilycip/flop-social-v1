@@ -1,0 +1,17 @@
+{
+  // TEST-ONLY config for the AGENT worker's Durable Objects (the MEMORY DO). It mirrors the MEMORY
+  // binding + migration from wrangler.agent.jsonc but OMITS the GATEWAY service binding and the Sandbox,
+  // which cannot resolve in an isolated single-worker test and are not needed to exercise the memory DO.
+  // Keep the MEMORY binding + migration identical to wrangler.agent.jsonc.
+  "name": "flop-agent",
+  "main": "src/agent-index.ts",
+  "compatibility_date": "2025-07-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "MEMORY", "class_name": "AgentMemory" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AgentMemory"] }
+  ]
+}

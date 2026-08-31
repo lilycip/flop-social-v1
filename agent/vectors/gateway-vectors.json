@@ -1,0 +1,156 @@
+{
+  "note": "Golden GATEWAY signing vectors from the audited shared/ code. The TS port must reproduce action_string, single_line, the signed bytes, and the signature byte-for-byte. Regenerate with agent/tools/gen_gateway_vectors.py.",
+  "identity_seed_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "our_did": "did:key:z6MkvDqGT54cXesYGvABpF1UapVNwjCqRcafi4Px6Thv5T3Z",
+  "our_pub_raw_hex": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+  "note_ns": "did-f9",
+  "note_key": "c3f1afd7f5166a",
+  "owner_pub_raw_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+  "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+  "gw_grant": {
+    "grant_id": "g-gw",
+    "owner_did": "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX",
+    "agent_did": "did:key:z6MkvDqGT54cXesYGvABpF1UapVNwjCqRcafi4Px6Thv5T3Z",
+    "issued": "1000",
+    "expiry": "4000000000",
+    "window": "86400",
+    "allow": {
+      "CLAIM": 3,
+      "RESULT": 3,
+      "ATTEST:useful:board-match": 2,
+      "ATTEST:not": 2,
+      "NOTE_WRITE:identity": 1,
+      "SAY": 10
+    },
+    "signature": "fbA-KLLvtrfOtrEVvjSgUnPUi7MWnkTvXIdevgAfIQf2hG9Am6geKNCCmt61-GK05TqTufZ1iRgRu5Z1ni3SBg"
+  },
+  "kibble_vectors": [
+    {
+      "verb": "CLAIM",
+      "target": {
+        "job_id": "job-abc123"
+      },
+      "verdict": null,
+      "nonce": "1",
+      "action_string": "CLAIM v2 | job:job-abc123",
+      "swept": "CLAIM v2 | job:job-abc123",
+      "sig_input_utf8": "kibble|1|CLAIM v2 | job:job-abc123",
+      "signature": "irHmrHxvbZhwTK-ctGp5__GevfqjiLV-JOlyUN3W5FQ6q56FxA7vEY92cXUpNxBTNKmiFtzqi20kBtod3Is1AA"
+    },
+    {
+      "verb": "RESULT",
+      "target": {
+        "job_id": "job-abc123",
+        "result": "the delivered answer text"
+      },
+      "verdict": null,
+      "nonce": "2",
+      "action_string": "RESULT v2 | job:job-abc123 | rh:f2d42a0c28729de310228520cfdc76fe5c0f8227cd6c60a22f0f93fd9d763add",
+      "swept": "RESULT v2 | job:job-abc123 | rh:f2d42a0c28729de310228520cfdc76fe5c0f8227cd6c60a22f0f93fd9d763add",
+      "sig_input_utf8": "kibble|2|RESULT v2 | job:job-abc123 | rh:f2d42a0c28729de310228520cfdc76fe5c0f8227cd6c60a22f0f93fd9d763add",
+      "signature": "sj2p1TU_SnRnQateM7ID9OKIfvY7xlb8Wn9D_85Vty3vUo5TSpAHgxRmLHe5X8913rw2dEoJ5j2FuVaKaPqIAg"
+    },
+    {
+      "verb": "ATTEST",
+      "target": {
+        "job_id": "job-abc123",
+        "result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "verdict": {
+        "useful": true
+      },
+      "nonce": "3",
+      "action_string": "ATTEST v2 | job:job-abc123 | verdict:useful | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "swept": "ATTEST v2 | job:job-abc123 | verdict:useful | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sig_input_utf8": "kibble|3|ATTEST v2 | job:job-abc123 | verdict:useful | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "signature": "jYCKvuCHGiWUjlTdHAvZhLDMFvyfFtwcRx_gir_ZW8e4wFTk2LQ4TVkeXvqHDvpyc-zNa6gPxYapJrLG0t4xAg"
+    },
+    {
+      "verb": "ATTEST",
+      "target": {
+        "job_id": "job-abc123",
+        "result_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "verdict": {
+        "useful": false
+      },
+      "nonce": "4",
+      "action_string": "ATTEST v2 | job:job-abc123 | verdict:not | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "swept": "ATTEST v2 | job:job-abc123 | verdict:not | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sig_input_utf8": "kibble|4|ATTEST v2 | job:job-abc123 | verdict:not | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "signature": "2jxcXiskOnfw3_Rh2h33yi_FcovD-Musi2Wl0sayAl_QP2X9KTPOhZMWQZldgGY7YMPtt4xXS7FOtOFXicaDCQ"
+    }
+  ],
+  "note_vector": {
+    "namespace": "did-f9",
+    "key": "c3f1afd7f5166a",
+    "nonce": "5",
+    "value": "v1.4.0",
+    "sig_input_utf8": "did-f9|c3f1afd7f5166a|5|v1.4.0",
+    "signature": "Z2rmT_raSt5M7vB6eKWHvSgdCp0pM2bsOTQvG7VFlSXOx__x9GF_0RtEoo4U18gcr2Lc9D1FgnavOhCjgoMMAg"
+  },
+  "keyfmt_vector": {
+    "seed_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+    "pkcs8_prefix_hex": "302e020100300506032b657004220420",
+    "message_utf8": "kibble|3|ATTEST v2 | job:job-abc123 | verdict:useful | rh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "signature": "jYCKvuCHGiWUjlTdHAvZhLDMFvyfFtwcRx_gir_ZW8e4wFTk2LQ4TVkeXvqHDvpyc-zNa6gPxYapJrLG0t4xAg"
+  },
+  "say_vector": {
+    "room": "lobby",
+    "text": "hello from the agent  (signed)",
+    "nonce": "6",
+    "swept": "hello from the agent  (signed)",
+    "sig_input_utf8": "lobby|6|hello from the agent  (signed)",
+    "signature": "gW8SbBhxjFo3iScBTH1V60dTWwq9DGV6baqFTHl2zhHLRwFxenQn2G6VBOp41jW6rK64-cSt4rHKAKkQB1P8Aw"
+  },
+  "sweep_vectors": [
+    {
+      "raw": "hello world",
+      "swept": "hello world"
+    },
+    {
+      "raw": "a\nb\tc",
+      "swept": "a b c"
+    },
+    {
+      "raw": "  trim me  ",
+      "swept": "trim me"
+    },
+    {
+      "raw": "bidi‮evil",
+      "swept": "bidi evil"
+    },
+    {
+      "raw": "zero​width",
+      "swept": "zero width"
+    },
+    {
+      "raw": "a b",
+      "swept": "a b"
+    },
+    {
+      "raw": " edge ",
+      "swept": "edge"
+    },
+    {
+      "raw": "a b",
+      "swept": "a b"
+    },
+    {
+      "raw": " para ",
+      "swept": "para"
+    },
+    {
+      "raw": "﻿boom",
+      "swept": "boom"
+    },
+    {
+      "raw": "boom﻿",
+      "swept": "boom"
+    },
+    {
+      "raw": "emoji😀end",
+      "swept": "emoji😀end"
+    }
+  ]
+}
