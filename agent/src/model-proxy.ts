@@ -62,5 +62,17 @@ function extractCompletion(data: unknown): string | null {
     const t = first ? first["text"] : undefined;
     if (typeof t === "string") return t;
   }
+  // Newer backends return an auto-parsed JSON answer as an OBJECT under `response`. Fall back to it
+  // LAST (the string branches above are more faithful raw bytes); an empty object is not a completion,
+  // so guard "{}" out and let it stay a MODEL_ERROR.
+  const resp = d["response"];
+  if (resp !== null && typeof resp === "object" && !Array.isArray(resp)) {
+    try {
+      const s = JSON.stringify(resp);
+      if (s && s !== "{}") return s;
+    } catch {
+      /* unstringifiable (e.g. a cycle) - treat as no completion */
+    }
+  }
   return null;
 }

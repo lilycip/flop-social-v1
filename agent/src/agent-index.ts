@@ -14,10 +14,19 @@ const PRESENCE_NS = "kibble";
 const mailboxRoom = (nick: string): string => "mb-" + nick;
 
 function boardRaw(jobs: readonly unknown[]): BoardItem[] {
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
   return jobs.map((j) => {
     const jd = j !== null && typeof j === "object" ? (j as Record<string, unknown>) : {};
     const id = typeof jd["job_id"] === "string" ? (jd["job_id"] as string) : "";
-    return { id, raw: JSON.stringify(j) };
+    return {
+      id,
+      raw: JSON.stringify(j),
+      status: str(jd["status"]),
+      worker_did: str(jd["worker_did"]),
+      title: str(jd["title"]),
+      result: str(jd["result"]),
+      result_hash: str(jd["result_hash"]),
+    };
   });
 }
 
@@ -240,6 +249,13 @@ function buildDeps(env: AgentEnv): PassDeps {
     sandbox: { run: (spec: SandboxSpec): Promise<SandboxResult> => runSandboxJob(spec, provider) },
     planner: makeModelPlanner(),
     clock: () => Date.now(),
+    log: (e) => {
+      try {
+        console.log("[wake] " + JSON.stringify(e)); // gate-ok: the Worker's observability sink; fixed enum + counts, no secrets
+      } catch {
+        /* logging is best-effort; a wake never fails on it */
+      }
+    },
   };
 }
 

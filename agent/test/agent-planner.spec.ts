@@ -65,7 +65,7 @@ const OK = (text: string): ModelResult => ({ status: "OK", text });
 function ctx(over: Partial<PassContext> = {}): PassContext {
   return { nick: "agent", board: [], mailbox: [], rooms: [], freshJobIds: [], learnings: [], handoff: null, recent: [], tasks: [], introduced: false, ...over };
 }
-const job = (id: string, raw?: string): BoardItem => ({ id, raw: raw ?? JSON.stringify({ job_id: id, ask: "do a thing" }) });
+const job = (id: string, raw?: string, over: Partial<BoardItem> = {}): BoardItem => ({ id, raw: raw ?? JSON.stringify({ job_id: id, ask: "do a thing" }), status: "", worker_did: "", title: "", result: "", result_hash: "", ...over });
 
 describe("parseCommand", () => {
   it("parses a plain JSON command", () => {
@@ -218,7 +218,29 @@ describe("makeModelPlanner - the loop", () => {
     const { caps } = fakeCaps((_p, s) => script[s] ?? OK('{"action":"done"}'), {
       taskDone: async () => CAP_BUDGET, // the wall is out of memory budget this wake
     });
-    await expect(makeModelPlanner().plan(ctx({ tasks: [{ id: "presence", text: "x", schedule: "hourly" }] }), caps)).resolves.toBeUndefined();
+    const outcome = await makeModelPlanner().plan(ctx({ tasks: [{ id: "presence", text: "x", schedule: "hourly" }] }), caps);
+    expect(outcome).toMatchObject({ terminal: "done", actions: 1, emits: 0, tasksDue: 1 });
+  });
+});
+
+describe("makeModelPlanner - outcome (terminal reason for a silent wake)", () => {
+  it("reports terminal 'done' with tasksDue=0 when the owner task never reached the prompt", async () => {
+    const { caps } = fakeCaps(() => OK('{"action":"done"}'));
+    const outcome = await makeModelPlanner().plan(ctx(), caps);
+    expect(outcome).toMatchObject({ terminal: "done", tasksDue: 0, emits: 0 });
+  });
+
+  it("reports terminal 'model_error' and the status when the gateway model call fails", async () => {
+    const { caps } = fakeCaps(() => ({ status: "MODEL_ERROR" }) as ModelResult);
+    const outcome = await makeModelPlanner().plan(ctx(), caps);
+    expect(outcome).toMatchObject({ terminal: "model_error", lastStatus: "MODEL_ERROR", emits: 0 });
+  });
+
+  it("counts a public emit and reports it in the outcome", async () => {
+    const script = [OK('{"action":"say","room":"r","text":"t"}'), OK('{"action":"done"}')];
+    const { caps } = fakeCaps((_p, s) => script[s] ?? OK('{"action":"done"}'));
+    const outcome = await makeModelPlanner().plan(ctx(), caps);
+    expect(outcome).toMatchObject({ terminal: "done", actions: 1, emits: 1 });
   });
 });
 
@@ -342,7 +364,8 @@ describe("makeModelPlanner - nothing escapes", () => {
     const { caps } = fakeCaps(() => {
       throw new Error("model exploded");
     });
-    await expect(makeModelPlanner().plan(ctx(), caps)).resolves.toBeUndefined();
+    const outcome = await makeModelPlanner().plan(ctx(), caps);
+    expect(outcome).toMatchObject({ terminal: "transport_error", steps: 0 });
   });
 
   it("a throwing capability is caught and the loop continues to done", async () => {
@@ -352,7 +375,8 @@ describe("makeModelPlanner - nothing escapes", () => {
         throw new Error("emit blew up");
       },
     });
-    await expect(makeModelPlanner().plan(ctx(), caps)).resolves.toBeUndefined();
+    const outcome = await makeModelPlanner().plan(ctx(), caps);
+    expect(outcome).toMatchObject({ terminal: "done", emits: 1 });
   });
 
   it("stops cleanly when a capability reports BUDGET exhaustion", async () => {
@@ -364,5 +388,49 @@ describe("makeModelPlanner - nothing escapes", () => {
     });
     await makeModelPlanner().plan(ctx(), caps);
     expect(rec.prompts[1]).toContain("out of write budget");
+  });
+});
+
+describe("makeModelPlanner - ATTESTABLE_RESULTS (vouch for a delivered result)", () => {
+  const HASH = "b".repeat(64);
+  const delivered = job("done-1", undefined, { status: "delivered", title: "Explain quorum", result: "A quorum is a majority of nodes.", result_hash: HASH });
+
+  it("surfaces a delivered result with its hash, in a fenced ATTESTABLE_RESULTS block", async () => {
+    const { caps, rec } = fakeCaps(() => OK('{"action":"done"}'));
+    await makeModelPlanner().plan(ctx({ board: [delivered] }), caps);
+    expect(rec.prompts[0]).toContain("ATTESTABLE_RESULTS");
+    expect(rec.prompts[0]).toContain("done-1");
+    expect(rec.prompts[0]).toContain(HASH);
+  });
+
+  it("omits a job that is not delivered or carries no valid hash", async () => {
+    const openJob = job("open-1", undefined, { status: "open" });
+    const noHash = job("done-2", undefined, { status: "delivered", result: "x", result_hash: "" });
+    const { caps, rec } = fakeCaps(() => OK('{"action":"done"}'));
+    await makeModelPlanner().plan(ctx({ board: [openJob, noHash] }), caps);
+    const p = rec.prompts[0]!;
+    const seg = p.slice(p.indexOf("ATTESTABLE_RESULTS"), p.indexOf("MAILBOX"));
+    expect(seg).not.toContain("open-1");
+    expect(seg).not.toContain("done-2");
+  });
+
+  it("the model can attest a listed delivery by copying its job_id + result_hash", async () => {
+    const script = [OK(`{"action":"attest","job_id":"done-1","result_hash":"${HASH}","useful":true}`), OK('{"action":"done"}')];
+    const { caps, rec } = fakeCaps((_p, s) => script[s] ?? OK('{"action":"done"}'));
+    const outcome = await makeModelPlanner().plan(ctx({ board: [delivered] }), caps);
+    expect(rec.emits).toContainEqual(
+      expect.objectContaining({ shape: "kibble", verb: "ATTEST", target: expect.objectContaining({ job_id: "done-1", result_hash: HASH }) }),
+    );
+    expect(outcome).toMatchObject({ emits: 1 });
+  });
+});
+
+describe("makeModelPlanner - ATTESTABLE result floor (regression guard)", () => {
+  it("never truncates the shown result below the hashed length, even with a tiny maxAttestResultChars", async () => {
+    const longResult = "R".repeat(2000);
+    const j = job("done-long", undefined, { status: "delivered", title: "T", result: longResult, result_hash: "c".repeat(64) });
+    const { caps, rec } = fakeCaps(() => OK('{"action":"done"}'));
+    await makeModelPlanner({ maxAttestResultChars: 100 }).plan(ctx({ board: [j] }), caps);
+    expect(rec.prompts[0]!).toContain(longResult);
   });
 });

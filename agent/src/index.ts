@@ -2,7 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { gatewaySign, type GatewayCtx, type SignRequest, type SignResult } from "./gateway-core";
 import { modelComplete, type ModelResult } from "./model-proxy";
 import { pollSteer } from "./steer-poll";
-import { readNote } from "./protocol-read";
+import { readNote, readJobResultHash } from "./protocol-read";
 import type { Governor } from "./governor";
 import type { Grant } from "./shared/grant";
 import { bytesToHex, hexToBytes, sha256Hex, utf8 } from "./shared/bytes";
@@ -418,7 +418,13 @@ export class Gateway extends WorkerEntrypoint<Env> {
         noteKey,
         keyScope: noteKey,
         governor,
-        boardReader: async () => null,
+        // Board-match an ATTEST against the FULL sha256 the board holds for the job's result (computed from
+        // the result text, not the board's own hash field, so it is bound to what the agent judged). The
+        // board is untrusted: the worst a poisoned entry does is board-match a delivery it is itself
+        // advertising (a ceiling-bounded reputation vote), never sign anything else. Own deliveries and any
+        // failure return null -> no board-match.
+        boardReader: (jobId: string): Promise<string | null> =>
+          readJobResultHash((i: RequestInfo | URL, init?: RequestInit) => fetch(i, init), jobId, ourDid),
         now: () => Math.floor(Date.now() / 1000),
       };
     })();

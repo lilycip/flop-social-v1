@@ -1,5 +1,6 @@
 import { urlRoomRead, urlNoteGet, urlRoomsList, TECHNOCORE_BASE, KIBBLE_BASE } from "./shared/protocol";
 import { isValidName, roomClass, nameIsBearerSecret } from "./shared/names";
+import { sha256Hex } from "./shared/bytes";
 
 const MAX_MESSAGES = 200;
 const MAX_JOBS = 200;
@@ -20,6 +21,11 @@ function i(v: unknown): number | null {
 }
 function nn(v: unknown): number {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : 0;
+}
+// The board's advertised result-hash prefix: 8 to 64 lowercase hex chars. Not a full hash; it anchors the
+// verification in resolveResultHashes. Anything else (uppercase, wrong length, non-hex) is not usable.
+function hexPrefix(v: unknown): string {
+  return typeof v === "string" && /^[0-9a-f]{8,64}$/.test(v) ? v : "";
 }
 
 export interface RoomMessage {
@@ -52,6 +58,10 @@ export interface BoardJob {
   useful_n: number;
   not_n: number;
   seq: number | null;
+  // The delivered result and its board-posted hash. Empty when the job has no delivery. The hash is what
+  // an ATTEST must carry to board-match, so it is surfaced to the agent (fenced as untrusted like the body).
+  result: string;
+  result_hash: string;
 }
 export interface BoardRead {
   jobs: BoardJob[];
@@ -184,13 +194,62 @@ export function normalizeBoard(obj: unknown): BoardRead {
       useful_n: nn(jd["useful_n"]),
       not_n: nn(jd["not_n"]),
       seq: i(jd["seq"]),
+      result: s(jd["result"]),
+      // The board advertises a SHORT lowercase-hex prefix of sha256(result), not a full hash. Keep it only
+      // as a prefix here; resolveResultHashes upgrades it to the full sha256 WE compute from the result (so
+      // the hash is always bound to the exact result text), and clears it if the two disagree.
+      result_hash: hexPrefix(jd["result_hash"]),
     });
   }
   const stats = o["stats"] !== null && typeof o["stats"] === "object" ? (o["stats"] as Record<string, unknown>) : {};
   return { jobs, stats };
 }
 
+// Turn each job's advertised prefix into the FULL sha256 of ITS OWN result, keeping the hash only when the
+// board's advertised prefix matches sha256(result). Result: result_hash is either "" or a full 64-hex hash
+// that provably commits to the exact `result` text the agent will see - a board cannot decouple the two,
+// and a result truncated by the read clamp fails the prefix check and becomes non-attestable.
+export async function resolveResultHashes(jobs: BoardJob[]): Promise<void> {
+  for (const j of jobs) {
+    const advertised = j.result_hash;
+    if (!j.result || !advertised) {
+      j.result_hash = "";
+      continue;
+    }
+    let full: string;
+    try {
+      full = await sha256Hex(j.result);
+    } catch {
+      j.result_hash = "";
+      continue;
+    }
+    j.result_hash = full.startsWith(advertised) ? full : "";
+  }
+}
+
 export async function readBoard(fetchImpl: typeof fetch, base: string = KIBBLE_BASE): Promise<BoardRead> {
   const { obj } = await getJson(fetchImpl, `${base}/api/board`);
-  return normalizeBoard(obj);
+  const board = normalizeBoard(obj);
+  await resolveResultHashes(board.jobs);
+  return board;
+}
+
+// The gateway's board-match reader: the FULL, result-bound hash the board holds for a job, or null. Returns
+// null for our OWN delivery (worker_did === ourDid) so a hijacked brain can never board-match a self-attest
+// - this is the trust-boundary enforcement, not the agent-side ATTESTABLE_RESULTS omission.
+export async function readJobResultHash(
+  fetchImpl: typeof fetch,
+  jobId: string,
+  ourDid: string,
+  base: string = KIBBLE_BASE,
+): Promise<string | null> {
+  try {
+    const { jobs } = await readBoard(fetchImpl, base);
+    const job = jobs.find((j) => j.job_id === jobId);
+    if (!job || !job.result_hash) return null;
+    if (ourDid && job.worker_did === ourDid) return null;
+    return job.result_hash;
+  } catch {
+    return null;
+  }
 }

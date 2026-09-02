@@ -37,6 +37,17 @@ describe("model proxy: reserve-before-call metering", () => {
     expect(r).toEqual({ status: "OK", text: "claude says hi" });
   });
 
+  it("returns the completion when a backend parses the JSON answer into a `response` OBJECT", async () => {
+    const answer = { action: "say", room: "lobby", text: "hi" };
+    const r = await modelComplete("hi", deps({ invoke: async () => ({ response: answer, choices: [] }) }));
+    expect(r).toEqual({ status: "OK", text: JSON.stringify(answer) });
+  });
+
+  it("prefers the raw choices string over the parsed `response` object when both are present", async () => {
+    const r = await modelComplete("hi", deps({ invoke: async () => ({ response: { a: 1 }, choices: [{ message: { content: "raw wins" } }] }) }));
+    expect(r).toEqual({ status: "OK", text: "raw wins" });
+  });
+
   it("passes the exact prompt to the binding", async () => {
     let seen: string | null = null;
     await modelComplete("the exact prompt", deps({
@@ -73,6 +84,11 @@ describe("model proxy: never-echo / bounded on every failure path", () => {
 
   it("a body with no extractable completion -> MODEL_ERROR", async () => {
     const r = await modelComplete("hi", deps({ invoke: async () => ({ choices: [] }) }));
+    expect(r.status).toBe("MODEL_ERROR");
+  });
+
+  it("an empty `response` object -> MODEL_ERROR (not a false '{}')", async () => {
+    const r = await modelComplete("hi", deps({ invoke: async () => ({ response: {} }) }));
     expect(r.status).toBe("MODEL_ERROR");
   });
 

@@ -120,6 +120,13 @@ export interface SandboxRunner {
 export interface BoardItem {
   id: string;
   raw: string;
+  // Structured fields the planner needs to surface ATTESTABLE deliveries without re-parsing `raw`. A
+  // delivered job carries a result and its board-posted hash; the hash is what an ATTEST must board-match.
+  status: string;
+  worker_did: string;
+  title: string;
+  result: string;
+  result_hash: string;
 }
 export interface MailItem {
   raw: string;
@@ -209,8 +216,22 @@ export interface AgentCapabilities {
   taskDone(taskId: string): Promise<Budgeted<{ stored: boolean }>>;
 }
 
+// Why the plan loop stopped this wake, emitted from the trusted harness (fixed labels plus counts, no
+// model text, so it is safe to log). This makes a silent wake legible: `done` with tasksDue=0 means the
+// owner task never reached the prompt, `model_error` a failed model call, `transport_error` a gateway throw.
+export type PlannerTerminal = "done" | "model_error" | "transport_error" | "budget" | "parse_exhausted" | "max_steps";
+export interface PlannerOutcome {
+  terminal: PlannerTerminal;
+  steps: number; // model calls made this wake
+  tasksDue: number; // owner tasks actually present in the prompt (0 => none were delivered)
+  actions: number; // non-done commands the model chose
+  emits: number; // public-emit commands specifically (say/claim/result/attest)
+  parseFailures: number; // replies that were not one valid JSON command
+  lastStatus?: string; // the model status on a model_error terminal
+}
+
 export interface Planner {
-  plan(ctx: PassContext, caps: AgentCapabilities): Promise<void>;
+  plan(ctx: PassContext, caps: AgentCapabilities): Promise<PlannerOutcome | void>;
 }
 
 export interface PassContext {
@@ -383,7 +404,7 @@ function buildCapabilities(budget: BudgetTracker, deps: PassDeps, allocNonce: ()
 export type PassEvent =
   | { kind: "presence"; ok: boolean }
   | { kind: "read"; source: "board" | "mailbox" | "rooms"; count: number; ok: boolean }
-  | { kind: "planner"; ok: boolean }
+  | { kind: "planner"; ok: boolean; outcome?: PlannerOutcome }
   | { kind: "budget-clamped"; note: string };
 
 export interface PassReport {
@@ -514,12 +535,13 @@ export async function runPass(deps: PassDeps): Promise<PassReport> {
   const allocNonce = makeNonceAllocator(deps.clock);
   const caps = buildCapabilities(budget, deps, allocNonce);
   let plannerOk = true;
+  let outcome: PlannerOutcome | void = undefined;
   try {
-    await deps.planner.plan({ nick: deps.nick, board, mailbox, rooms, freshJobIds, learnings, handoff, recent, tasks: due, introduced }, caps);
+    outcome = await deps.planner.plan({ nick: deps.nick, board, mailbox, rooms, freshJobIds, learnings, handoff, recent, tasks: due, introduced }, caps);
   } catch {
     plannerOk = false;
   }
-  log({ kind: "planner", ok: plannerOk });
+  log({ kind: "planner", ok: plannerOk, outcome: outcome ?? undefined });
 
   return {
     nick: deps.nick,

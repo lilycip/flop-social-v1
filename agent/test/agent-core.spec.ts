@@ -451,7 +451,7 @@ describe("runPass - nothing escapes to crash the cron", () => {
   it("clamps a hostile board flood to the per-read item cap (F4)", async () => {
     const planner: Planner = { async plan() {} };
     const { deps } = makeDeps({ budget: { reads: 4, modelCalls: 0, sandboxRuns: 0, writes: 1 }, planner });
-    deps.readBoard = async () => Array.from({ length: 5000 }, (_v, i) => ({ id: `j${i}`, raw: `item-${i}` }));
+    deps.readBoard = async () => Array.from({ length: 5000 }, (_v, i) => ({ id: `j${i}`, raw: `item-${i}`, status: "", worker_did: "", title: "", result: "", result_hash: "" }));
     const report = await runPass(deps);
     expect(report.boardCount).toBe(200);
   });
@@ -536,7 +536,11 @@ describe("the four memory protocols (4c-2)", () => {
   it("SEEN: the harness marks the board ids and hands the brain only the FRESH ones", async () => {
     const cap = capturingPlanner();
     const { deps, counts } = makeDeps({ budget: { reads: 4 }, planner: cap.planner });
-    deps.readBoard = async () => [{ id: "a", raw: "{}" }, { id: "b", raw: "{}" }, { id: "", raw: "{}" }];
+    deps.readBoard = async () => [
+      { id: "a", raw: "{}", status: "", worker_did: "", title: "", result: "", result_hash: "" },
+      { id: "b", raw: "{}", status: "", worker_did: "", title: "", result: "", result_hash: "" },
+      { id: "", raw: "{}", status: "", worker_did: "", title: "", result: "", result_hash: "" },
+    ];
     deps.memory.markSeen = async (ids: string[]) => {
       counts.markSeen++;
       expect(ids).toEqual(["a", "b"]);
