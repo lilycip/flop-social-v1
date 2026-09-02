@@ -53,6 +53,18 @@ revoked = set()
 check("a valid grant verifies under the owner key",
       grant.verify_grant(owner_pub, g, now=now, revoked_ids=revoked, expected_agent=AGENT_DID))
 
+# A crafted, non-string grant_id (e.g. a list) must return False, never RAISE out of the "never raises"
+# contract (it would otherwise be unhashable in the revoked-set membership test).
+_crafted = dict(g)
+_crafted["grant_id"] = ["not", "a", "string"]
+_nonhash_ok = True
+try:
+    _r = grant.verify_grant(owner_pub, _crafted, now=now, revoked_ids=revoked, expected_agent=AGENT_DID)
+    check("a non-string grant_id verifies False (no raise)", _r is False)
+except Exception:
+    _nonhash_ok = False
+check("verify_grant does NOT raise on a crafted non-hashable grant_id", _nonhash_ok)
+
 def ceil(verb, target=None, verdict=None, board_match=False, gr=g, n=now, rv=None):
     return grant.auto_ceiling(owner_pub, gr, verb, target, verdict, board_match,
                               now=n, revoked_ids=revoked if rv is None else rv, expected_agent=AGENT_DID)

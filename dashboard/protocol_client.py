@@ -174,6 +174,23 @@ class ProtocolClient:
             return None
         return _parse_note_body(body)
 
+    def get_note_state(self, namespace, key):
+        """Like get_note, but distinguishes a genuinely-absent slot from a read we could not complete.
+        Returns ('value', banner-stripped-value) on 200, ('absent', None) on 404, ('error', None) on any
+        other status, a bad name, or a transport failure. Callers that must not treat a flaky read as
+        'nothing signed' use this instead of get_note."""
+        if not N.is_valid_name(namespace) or not N.is_valid_name(key):
+            return "error", None
+        try:
+            status, body = self._get(P.url_note_get(namespace, key, self.base), self.timeout)
+        except Exception:
+            return "error", None
+        if status == 404:
+            return "absent", None
+        if status != 200:
+            return "error", None
+        return "value", _parse_note_body(body)
+
     def set_note(self, namespace, key, value, confirm=False):
         """Write an UNSIGNED note (world-writable, last-write-wins) via GET /kv/<ns>/<key>/set/<value>.
         The grant channel uses this to publish the owner-signed grant to the owner's slot: the note is
@@ -192,21 +209,21 @@ class ProtocolClient:
         if len(url) > MAX_WRITE_URL:
             return False, "that value is too large to write in one note"
         body = None
-        last_exc = None
         for attempt in range(WRITE_ATTEMPTS):
             try:
                 status, body = self._get(url, self.timeout)
             except Exception as e:
-                last_exc = e
                 if attempt < WRITE_ATTEMPTS - 1:
                     self._sleep(RETRY_SECONDS)
                     continue
                 raise ProtocolError("could not reach the protocol to write the note: %s" % e)
             if status in (200, 201):
-                last_exc = None
                 break
-            if attempt < WRITE_ATTEMPTS - 1:
-                self._sleep(RETRY_SECONDS)
+            # Retry only TRANSIENT failures. A permanent 4xx (bad request, forbidden, not found, too
+            # large) will never succeed, so return at once rather than burn three writes and 1.2s.
+            transient = status in (408, 429) or 500 <= status <= 599
+            if transient and attempt < WRITE_ATTEMPTS - 1:
+                self._sleep(RETRY_SECONDS * 2 if status == 429 else RETRY_SECONDS)
                 continue
             return False, "the protocol refused the note write (%s): %s" % (status, (body or "").strip()[:200])
         if not confirm:

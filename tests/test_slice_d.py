@@ -119,7 +119,7 @@ check("no grant is stored after the failures", dash.grant_status()[1]["active"] 
 code, out = dash.sign_grant({"allow": {"CLAIM": 10, "RESULT": 10, "ATTEST:not": 200, "SAY": 0},
                              "duration_seconds": 7 * 86400, "passphrase": PW})
 check("a valid grant signs", code == 200 and out["ok"])
-stored = dash._read_json(dash.grant_path)
+stored = dash._load_grant_record()[0]
 check("the stored grant verifies against the owner key AND is bound to the linked agent",
       G.verify_grant(owner_pub, stored, now=clk(), revoked_ids=set(), expected_agent=AGENT_DID))
 check("the stored grant carries the agent did", stored.get("agent_did") == AGENT_DID)
@@ -151,7 +151,7 @@ _c, _o = dash.sign_grant({"allow": {"CLAIM": 3}, "duration_seconds": 86400, "pas
 check("a grant still signs locally when the publish fails", _c == 200 and _o["ok"])
 check("the failed publish is reported honestly", _o.get("published") is False)
 check("the locally stored grant is the newly signed one despite the publish failure",
-      dash._read_json(dash.grant_path).get("grant_id") == _o.get("grant_id"))
+      dash._load_grant_record()[0].get("grant_id") == _o.get("grant_id"))
 check("grant_status flags an undelivered grant as unsent (offer a resend)",
       dash.grant_status()[1].get("unsent") is True)
 _rc, _ro = dash.resend_grant()
@@ -167,7 +167,7 @@ _notes_after_resend = len(fake_pc.notes)
 code, out = dash.sign_grant({"allow": {"CLAIM": 10, "RESULT": 10, "ATTEST:not": 200, "SAY": 0},
                              "duration_seconds": 7 * 86400, "passphrase": PW})
 check("re-signed the canonical grant for the remaining checks", code == 200 and out["ok"])
-stored = dash._read_json(dash.grant_path)
+stored = dash._load_grant_record()[0]
 
 gs = dash.grant_status()[1]
 check("grant_status reports active", gs["active"] is True and gs["revoked"] is False)
@@ -203,7 +203,7 @@ check("the stop published to the SAME owner slot",
       _sns == D.did_note_ns(owner_did) and _sk == D.note_shard_key(owner_did)[1] + "-grant")
 gs2 = dash.grant_status()[1]
 check("after the stop there is no active grant (everything asks you)", gs2["active"] is False)
-dash._write_json(dash.grant_path, stored)
+dash._store_grant(stored, True, False)
 check("a restored-but-revoked grant is still inactive",
       dash.grant_status()[1]["active"] is False and dash.grant_status()[1]["revoked"] is True)
 fake_pc.fail = True
@@ -269,6 +269,263 @@ check("grant active before corruption", d3.grant_status()[1]["active"] is True)
 d3.revoked_path.write_text("{ this is not a list", "utf-8")
 check("a corrupt revoked file makes the grant report INACTIVE (fail closed)",
       d3.grant_status()[1]["active"] is False)
+
+# --- Kill-switch + resend honesty under a failed publish ---
+st4 = Path(tempfile.mkdtemp())
+d4 = SRV.Dashboard(str(st4), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d4.ks.generate(PW)
+d4.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+
+# A stop whose publish fails must persist as a RETRYABLE stop, never read as "stopped".
+d4.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+d4.pc.fail = True
+_sc, _so = d4.revoke_grant({"passphrase": PW})
+check("a failed stop reports published:False + stopped:False", _so["published"] is False and _so["stopped"] is False)
+_gs = d4.grant_status()[1]
+check("a failed stop is flagged stop_unsent (warn loud, keep the resend)", _gs.get("stop_unsent") is True)
+check("a failed stop is NOT active and NOT a permissive 'unsent' grant",
+      _gs.get("active") is False and _gs.get("unsent") is False and _gs.get("is_stop") is True)
+
+# An undelivered stop must NOT be destroyable by Unlink/relink - both would strand a running agent.
+check("Unlink is REFUSED while a stop is undelivered (never discard a pending stop)",
+      d4.unlink_agent()[0] == 409)
+_, _OTHER4 = D.generate()
+check("switching to a DIFFERENT agent is REFUSED while a stop is undelivered",
+      d4.link_agent({"agent_did": _OTHER4, "nick": "b"})[0] == 409)
+check("re-linking the SAME agent is still allowed (the recovery path)",
+      d4.link_agent({"agent_did": AGENT_DID, "nick": "a"})[0] == 200)
+
+# Resend after a stop must re-transport the STOP, never resurrect the prior permissive grant.
+_rc, _ro = d4.resend_grant()
+check("resend after a stop re-sends the STOP (is_stop), still honest published:False while down",
+      _ro.get("is_stop") is True and _ro.get("published") is False and _ro.get("ok") is True)
+_stop_val = json.loads(d4.pc.notes[-1][2])
+check("the resent bytes are the empty-allow stop, not a permissive grant", _stop_val.get("allow") == {})
+d4.pc.fail = False
+_rc2, _ro2 = d4.resend_grant()
+check("resend of the stop lands once the network recovers", _ro2.get("published") is True and _ro2.get("is_stop") is True)
+check("after the stop lands, no active grant and no lingering stop_unsent",
+      d4.grant_status()[1].get("active") is False and d4.grant_status()[1].get("stop_unsent") is False)
+
+# Resend must refuse a grant that is no longer valid (revoked), never put it back on the wire.
+d5dir = Path(tempfile.mkdtemp())
+d5 = SRV.Dashboard(str(d5dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d5.ks.generate(PW)
+d5.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d5.pc.fail = True
+d5.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+_revoked_gid = d5.grant_status()[1]["grant_id"]
+d5._add_revoked(_revoked_gid)  # simulate the grant having been revoked out from under a stale resend
+_notes_before_bad_resend = len(d5.pc.notes)
+_bc, _bo = d5.resend_grant()
+check("resend REFUSES a revoked grant (never re-transports lost authority)",
+      _bo.get("ok") is False and _bo.get("published") is False)
+check("the refused resend wrote nothing to the wire", len(d5.pc.notes) == _notes_before_bad_resend)
+
+# An unreadable grant.json must FAIL CLOSED (like the revoked set), never launder to "no grant":
+# a truncated/locked file may hold a live grant or a pending stop.
+d6dir = Path(tempfile.mkdtemp())
+d6 = SRV.Dashboard(str(d6dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d6.ks.generate(PW)
+d6.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d6.grant_path.write_text("{ this is not valid json", "utf-8")
+_g6 = d6.grant_status()[1]
+check("an unreadable grant record reports unknown:True + active:False (fail closed, not 'no grant')",
+      _g6.get("unknown") is True and _g6.get("active") is False)
+check("Unlink is REFUSED while the grant record is unreadable", d6.unlink_agent()[0] == 409)
+check("resend REFUSES an unreadable grant record", d6.resend_grant()[1].get("ok") is False)
+
+# agent.json - the THIRD input - must ALSO fail closed. A live grant + an unreadable
+# agent.json must not let revoke blank the grant or a relink orphan it.
+d7dir = Path(tempfile.mkdtemp())
+d7 = SRV.Dashboard(str(d7dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d7.ks.generate(PW)
+d7.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d7.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+d7.agent_path.write_text("{ truncated agent file", "utf-8")
+_g7 = d7.grant_status()[1]
+check("a live grant with an UNREADABLE agent.json reports unknown:True (never 'no grant')",
+      _g7.get("unknown") is True and _g7.get("active") is False)
+_rv7 = d7.revoke_grant({"passphrase": PW})
+check("revoke REFUSES to blank the grant when agent.json is unreadable (never strand a running agent)",
+      _rv7[1].get("ok") is False and _rv7[1].get("need") == "relink")
+check("the grant record still exists after the refused revoke (not blanked)",
+      d7._load_grant_record()[0] is not None)
+# Recovery: re-linking the correct did restores a readable state WITHOUT clearing the grant.
+_lk7 = d7.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+check("re-linking the same did after an unreadable agent.json succeeds (recovery path)", _lk7[0] == 200)
+check("the grant is preserved + addressable again after the relink (active)",
+      d7.grant_status()[1].get("active") is True)
+
+# A grant bound to a DIFFERENT agent than the one linked reads as unknown (may be live for that other agent).
+d8dir = Path(tempfile.mkdtemp())
+d8 = SRV.Dashboard(str(d8dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d8.ks.generate(PW)
+d8.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d8.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+_, _OTHER8 = D.generate()
+d8._write_json(d8.agent_path, {"agent_did": _OTHER8, "nick": "b"})  # agent record now names a DIFFERENT did
+check("a grant bound to a different agent than the linked one reports unknown:True (not 'no grant')",
+      d8.grant_status()[1].get("unknown") is True)
+
+# A tampered record (is_stop flag true but a NON-empty allow) reads as unknown, not a benign stop.
+d9dir = Path(tempfile.mkdtemp())
+d9 = SRV.Dashboard(str(d9dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d9.ks.generate(PW)
+d9.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d9.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+_g9grant = d9._load_grant_record()[0]
+d9._store_grant(_g9grant, True, True)  # mislabel a permissive grant as a stop
+check("a record whose is_stop disagrees with a non-empty allow reads as unknown (tamper guard)",
+      d9.grant_status()[1].get("unknown") is True)
+
+# Wall 1: agent.json UNREADABLE + a live grant for X. grant.json IS readable and names X, so a recovery
+# relink to a WRONG did (a paste error) must be REFUSED - otherwise the next Stop binds to the wrong agent
+# and falsely reports X stopped while X's permissive grant is still replayable on the slot.
+d10dir = Path(tempfile.mkdtemp())
+d10 = SRV.Dashboard(str(d10dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d10.ks.generate(PW)
+d10.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d10.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+d10.agent_path.write_text("{ truncated agent file", "utf-8")
+_, _Y10 = D.generate()
+_bad10 = d10.link_agent({"agent_did": _Y10, "nick": "y"})
+check("recovery relink to a did that does NOT own the live grant is REFUSED (Wall 1, unreadable agent.json)",
+      _bad10[0] == 409 and _bad10[1].get("need") == "relink-stored" and _bad10[1].get("stored_agent_did") == AGENT_DID)
+check("the wrong-did recovery relink did not overwrite agent.json (still guided to the right did)",
+      d10.grant_status()[1].get("unknown") is True)
+_ok10 = d10.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+check("recovery relink to the grant's REAL owner succeeds and preserves the grant (active)",
+      _ok10[0] == 200 and d10.grant_status()[1].get("active") is True)
+
+# Wall 2: agent.json rewritten to a DIFFERENT valid did Y while a live grant for X is
+# stored. A Stop is bound to the LINKED agent, so a stop for Y would NOT cover X - revoke must REFUSE and
+# report stopped:False, never sign a wrong-agent stop and claim the agent is stopped.
+d11dir = Path(tempfile.mkdtemp())
+d11 = SRV.Dashboard(str(d11dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d11.ks.generate(PW)
+d11.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d11.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+_, _Y11 = D.generate()
+d11._write_json(d11.agent_path, {"agent_did": _Y11, "nick": "b"})
+_notes_before11 = len(d11.pc.notes)
+_rv11 = d11.revoke_grant({"passphrase": PW})
+check("STOP REFUSES when the stored grant is bound to a different agent than linked (never false 'stopped')",
+      _rv11[1].get("stopped") is False and _rv11[1].get("ok") is False and _rv11[1].get("need") == "relink-stored")
+check("the refusal names the agent the live grant is actually bound to", _rv11[1].get("stored_agent_did") == AGENT_DID)
+check("the wrong-agent STOP was never published to the wire", len(d11.pc.notes) == _notes_before11)
+check("the live grant for X was NOT superseded by a wrong-agent stop",
+      d11._load_grant_record()[0].get("agent_did") == AGENT_DID)
+# Recovery must NOT deadlock: re-linking the grant's true owner (a switch back to X) re-associates rather
+# than destroying the grant, and the Stop then lands for the right agent.
+_re11 = d11.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+check("re-linking the grant's owner after a mismatch RE-ASSOCIATES (preserves the grant, active again)",
+      _re11[0] == 200 and d11.grant_status()[1].get("active") is True)
+_rv11b = d11.revoke_grant({"passphrase": PW})
+check("Stop now lands for the correct agent after re-association (stopped:True, bound to X)",
+      _rv11b[1].get("stopped") is True and json.loads(d11.pc.notes[-1][2]).get("allow") == {})
+# And a GENUINE switch to a third agent that does not own the grant is still blocked until the stop lands.
+d11b_dir = Path(tempfile.mkdtemp())
+d11b = SRV.Dashboard(str(d11b_dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d11b.ks.generate(PW)
+d11b.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d11b.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+_, _Z11 = D.generate()
+_sw11 = d11b.link_agent({"agent_did": _Z11, "nick": "z"})
+check("a genuine switch to an agent that does NOT own a LIVE grant is still blocked (stop first)",
+      _sw11[0] == 409 and _sw11[1].get("need") == "stop")
+
+# Write order: a superseding sign whose FIRST store-write fails (disk full / AV lock)
+# must leave the OLD grant readable and correctly ACTIVE - never inactive-because-its-id-was-revoked-before-
+# the-replacement-landed (which would launder a still-live grant into a safe-looking state and permit unlink).
+d12dir = Path(tempfile.mkdtemp())
+d12 = SRV.Dashboard(str(d12dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d12.ks.generate(PW)
+d12.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d12.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+_old_gid12 = d12.grant_status()[1]["grant_id"]
+_orig_store12 = d12._store_grant
+_st12 = {"n": 0}
+def _boom12(grant, published, is_stop):
+    _st12["n"] += 1
+    if _st12["n"] == 1:
+        raise OSError("simulated disk-full on the superseding write")
+    return _orig_store12(grant, published, is_stop)
+d12._store_grant = _boom12
+_raised12 = False
+try:
+    d12.sign_grant({"allow": {"CLAIM": 9}, "duration_seconds": 604800, "passphrase": PW})
+except OSError:
+    _raised12 = True
+d12._store_grant = _orig_store12
+check("a superseding sign whose first write fails surfaces the error (a 500, not a silent success)", _raised12)
+_g12 = d12.grant_status()[1]
+check("after the failed superseding write, the OLD grant is still ACTIVE, never false-inactive",
+      _g12.get("active") is True and _g12.get("grant_id") == _old_gid12)
+check("the still-live old grant BLOCKS unlink (not laundered into a safe state)", d12.unlink_agent()[0] == 409)
+
+# A present agent.json whose did is the WRONG TYPE (a list) is corrupt, not "no agent":
+# it must fail closed (unknown) and route into the guarded recovery, where Wall 1 again refuses a wrong did.
+d13dir = Path(tempfile.mkdtemp())
+d13 = SRV.Dashboard(str(d13dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d13.ks.generate(PW)
+d13.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d13.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+d13._write_json(d13.agent_path, {"agent_did": [AGENT_DID], "nick": "x"})
+check("a wrong-TYPE agent did (a list) reads as unknown:True (fail closed, F3)",
+      d13.grant_status()[1].get("unknown") is True)
+check("revoke refuses on a wrong-type agent did (routes to relink recovery, never a blank)",
+      d13.revoke_grant({"passphrase": PW})[1].get("need") == "relink")
+_, _WRONG13 = D.generate()
+_bad13 = d13.link_agent({"agent_did": _WRONG13, "nick": "y"})
+check("relink to a did that does NOT own the stored grant is refused (Wall 1 over a wrong-type record)",
+      _bad13[0] == 409 and _bad13[1].get("need") == "relink-stored" and _bad13[1].get("stored_agent_did") == AGENT_DID)
+_ok13 = d13.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+check("relink to the grant's real owner recovers (200) and the grant is active again",
+      _ok13[0] == 200 and d13.grant_status()[1].get("active") is True)
+
+# A grant record with a grant_id but an ABSENT inner agent_did (hand-corrupted but valid JSON) must fail
+# CLOSED everywhere: a predicate like `isinstance(x,str) and x!=y` reads a MISSING did as "no conflict"
+# and falls open, reproducing the false-"stopped" this suite exists to prevent.
+d14dir = Path(tempfile.mkdtemp())
+d14 = SRV.Dashboard(str(d14dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d14.ks.generate(PW)
+d14.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d14.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+_rec14 = json.loads(d14.grant_path.read_text("utf-8"))
+del _rec14["grant"]["agent_did"]  # strip the inner did, keep grant_id + valid JSON
+d14.grant_path.write_text(json.dumps(_rec14), "utf-8")
+check("a grant with grant_id but NO inner agent_did reads unknown:True (fail closed, not benign)",
+      d14.grant_status()[1].get("unknown") is True)
+_notes14 = len(d14.pc.notes)
+_rv14 = d14.revoke_grant({"passphrase": PW})
+check("revoke REFUSES a corrupt-owner grant (need manual, never a false 'stopped')",
+      _rv14[1].get("stopped") is False and _rv14[1].get("ok") is False and _rv14[1].get("need") == "manual")
+check("the corrupt-owner revoke published NOTHING to the wire", len(d14.pc.notes) == _notes14)
+check("unlink is REFUSED while the grant owner is unprovable", d14.unlink_agent()[0] == 409)
+d14.agent_path.write_text("{ truncated agent file", "utf-8")
+_, _Y14 = D.generate()
+_lk14 = d14.link_agent({"agent_did": _Y14, "nick": "y"})
+check("recovery relink is REFUSED (need manual) when the stored grant's owner is corrupt (Wall 1)",
+      _lk14[0] == 409 and _lk14[1].get("need") == "manual")
+
+# A present agent.json with a FALSY did ("") must fail closed (route to guarded recovery),
+# never read as "no agent linked" and skip Wall 1 while a grant for X is stored.
+d15dir = Path(tempfile.mkdtemp())
+d15 = SRV.Dashboard(str(d15dir), clock=Clock(1_700_000_000), protocol_client=FakePC(), kibble_client=FeedKibble(AGENT_DID))
+d15.ks.generate(PW)
+d15.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+d15.sign_grant({"allow": {"CLAIM": 5}, "duration_seconds": 604800, "passphrase": PW})
+d15._write_json(d15.agent_path, {"agent_did": "", "nick": "x"})
+check("an empty-string agent did reads unknown:True (fail closed, F2)",
+      d15.grant_status()[1].get("unknown") is True)
+_, _WRONG15 = D.generate()
+_bad15 = d15.link_agent({"agent_did": _WRONG15, "nick": "y"})
+check("relink to a non-owner is refused even when agent.json had a falsy did (Wall 1 not skipped, F2)",
+      _bad15[0] == 409 and _bad15[1].get("need") == "relink-stored" and _bad15[1].get("stored_agent_did") == AGENT_DID)
+_ok15 = d15.link_agent({"agent_did": AGENT_DID, "nick": "a"})
+check("relink to the grant's owner recovers after a falsy-did agent file",
+      _ok15[0] == 200 and d15.grant_status()[1].get("active") is True)
 
 sys.stdout.write("----\n")
 sys.stdout.write("ALL PASS\n" if not FAILS else ("FAILURES: " + ", ".join(FAILS) + "\n"))

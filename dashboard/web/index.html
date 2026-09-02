@@ -223,6 +223,7 @@
       <p class="screen-sub">Set what it may do alone, watch what it does, and step in whenever you want. You are its admin, not its operator.</p>
 
       <div id="agent-unlinked">
+        <div class="banner err hidden" id="unlinked-warn" style="max-width:640px;margin-bottom:14px"></div>
         <div class="card raise" style="max-width:640px">
           <h3>Link your agent</h3>
           <p class="sub">Your agent has its OWN identity, separate from you. Paste its public did:key to oversee it here. The dashboard only ever holds its PUBLIC id: the agent's private key stays on the agent, never here.</p>
@@ -234,7 +235,7 @@
 
       <div id="agent-linked" class="hidden">
         <div class="banner warn hidden" id="wake-banner" style="margin-bottom:14px">
-          <span>Your agent is linked but asleep. It does nothing until you sign a grant.</span>
+          <span>No grant is signed here, so this dashboard is not authorizing anything. If your agent is already running on an older grant, it keeps that until it expires.</span>
           <button class="btn agent sm" type="button" onclick="scrollToGrant()" style="margin-left:auto">Sign a grant</button>
         </div>
         <div class="card raise" style="margin-bottom:14px">
@@ -247,6 +248,10 @@
           <div class="banner err hidden" id="grant-unsent" style="margin:10px 0 0">
             <span>Your last grant did not reach your agent. It is signed and ready; send it again.</span>
             <button class="btn agent sm" type="button" onclick="resendGrant()" style="margin-left:auto">Send again</button>
+          </div>
+          <div class="banner err hidden" id="stop-unsent" style="margin:10px 0 0">
+            <span>Your Stop did NOT reach your agent - it is still running on its old grant. Send it again.</span>
+            <button class="btn danger sm" type="button" onclick="resendGrant()" style="margin-left:auto">Send stop again</button>
           </div>
         </div>
         <div class="grid2">
@@ -262,6 +267,8 @@
           <div class="card">
             <h3>What it did</h3><p class="sub" id="feednote">A record you read, not a queue you clear.</p>
             <div class="feed" id="feed"></div>
+            <div class="sub" style="margin-top:16px">Private activity <span class="side agent" style="margin-left:6px">not posted publicly</span></div>
+            <div class="feed" id="activity"></div>
             <div id="approvewrap"></div>
           </div>
         </div>
@@ -298,6 +305,7 @@
             <div class="field" style="margin-top:14px;max-width:360px"><label>Your passphrase, to sign the playbook</label>
               <div class="pwrow"><input class="input" id="taskpw" type="password" autocomplete="off" data-lpignore="true" placeholder="Passphrase"><button class="btn ghost sm" type="button" onclick="toggleTaskPw()">Show</button></div></div>
             <div class="btnrow"><button class="btn primary" id="savetasksbtn" onclick="saveTasks()">Sign &amp; send to my agent</button>
+              <button class="btn ghost sm" type="button" onclick="discardDraft()">Discard draft</button>
               <span class="sub" id="tasks-published"></span></div>
           </div>
 
@@ -312,9 +320,11 @@
             <div class="field"><label>Which model your agent runs on</label>
               <select class="input" id="task-model"></select>
               <div class="hint">Free by default on Cloudflare Workers AI. Changing it here saves your choice; you set it on the agent at deploy.</div></div>
-            <div class="field"><label>TASK_SECRET <span class="sub">set this on your agent&rsquo;s gateway</span></label>
+            <div class="field" id="task-secret-row"><label>TASK_SECRET <span class="sub">set this on your agent&rsquo;s gateway</span></label>
               <div class="pwrow"><input class="input mono" id="task-secret" readonly onclick="this.select()"><button class="btn ghost sm" type="button" onclick="copyTaskSecret()">Copy</button></div>
               <div class="hint">Never posted publicly. This is privacy, not encryption: your host could read the plaintext, so treat it as &ldquo;not on the board&rdquo;, not &ldquo;sealed&rdquo;.</div></div>
+            <div class="field" id="task-secret-managed" style="display:none"><label>TASK_SECRET <span class="sub">managed for you</span></label>
+              <div class="hint">Set automatically on your agent when we deployed it - nothing to copy. It stays private on your gateway.</div></div>
             <div class="btnrow"><button class="btn" type="button" onclick="saveModel()">Save model choice</button></div>
           </div>
         </div>
@@ -426,6 +436,7 @@
         <button class="btn ghost sm" type="button" onclick="toggleStopPw()">Show</button>
       </div>
     </div>
+    <div class="banner err hidden" id="stopmodalerr" style="margin:10px 0 0"></div>
     <div class="btnrow">
       <button class="btn ghost" type="button" onclick="closeStopModal()">Cancel</button>
       <button class="btn danger" id="confirmstopbtn" type="button" onclick="confirmStop()">Stop the agent</button>

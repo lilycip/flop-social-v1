@@ -145,12 +145,12 @@ class Dashboard:
         self.agent_path = self.dir / "agent.json"
         self.grant_path = self.dir / "grant.json"
         self.revoked_path = self.dir / "revoked_grants.json"
-        self.grant_publish_path = self.dir / "grant_publish.json"
         self._grant_lock = threading.Lock()
         self.tasks_path = self.dir / "tasks.json"
         self.task_secret_path = self.dir / "task_secret.txt"
         self.task_nonce_path = self.dir / "task_nonce"
         self.config_path = self.dir / "agent_config.json"
+        self.deploy_state_path = self.dir / "deploy.json"
         self._config_lock = threading.Lock()
         self.cost_config_path = self.dir / "cost_config.json"
         self.config_nonce_path = self.dir / "config_nonce"
@@ -527,17 +527,69 @@ class Dashboard:
         cur.add(gid)
         self._write_json(self.revoked_path, sorted(cur))
 
+    def _store_grant(self, grant, published, is_stop):
+        """Single source of truth for the intended-live grant. publish state and the stop flag live in
+        the same file as the grant so the two can never desync into a false 'delivered'; the signed grant
+        is nested so those fields never touch the signed bytes. published: True/False/None."""
+        self._write_json(self.grant_path, {"grant": grant, "published": published, "is_stop": bool(is_stop)})
+
+    def _load_grant_record(self):
+        """(grant, published, is_stop) from grant.json. Raises ValueError on a present-but-unreadable
+        file rather than reading it as 'no grant': a locked/truncated file may hold a live grant or a
+        pending stop, so it must fail closed. Tolerates a legacy raw-grant file."""
+        rec = self._read_json(self.grant_path)
+        if rec is None and self.grant_path.exists():
+            raise ValueError("the grant file is present but unreadable")
+        if not isinstance(rec, dict):
+            return None, None, False
+        if "grant" in rec:
+            g = rec.get("grant")
+            g = g if (isinstance(g, dict) and g.get("grant_id")) else None
+            pub = rec.get("published")
+            pub = pub if pub in (True, False, None) else None
+            return g, pub, bool(rec.get("is_stop"))
+        if rec.get("grant_id"):
+            # Legacy raw-grant file: infer is_stop from an empty allow here only.
+            return rec, None, (not (rec.get("allow") if isinstance(rec.get("allow"), dict) else {}))
+        return None, None, False
+
+    def _current_grant_id(self):
+        # Tolerate an unreadable record: this only reports the id to revoke and the caller overwrites the
+        # slot next. Catching here keeps an unreadable grant.json from crashing the STOP/SIGN paths.
+        try:
+            g, _pub, _stop = self._load_grant_record()
+        except ValueError:
+            return None
+        return g.get("grant_id") if isinstance(g, dict) else None
+
+    @staticmethod
+    def _valid_did_str(v):
+        """A did we can prove points at a specific agent: a non-empty string. Anything else (absent, a
+        list, "") is unprovable, and every guard fails closed on it."""
+        return isinstance(v, str) and bool(v.strip())
+
+    def _stored_grant_owner(self):
+        """Classify who the stored grant belongs to, so every change/stop guard shares one predicate.
+        Returns (kind, did): "none" (nothing stored); "owner"+did (a grant_id and a provable string
+        agent_did); "corrupt" (a grant_id but an unprovable agent_did); "unreadable" (grant.json bad)."""
+        try:
+            g, _p, _s = self._load_grant_record()
+        except ValueError:
+            return "unreadable", None
+        if not (isinstance(g, dict) and g.get("grant_id")):
+            return "none", None
+        did = g.get("agent_did")
+        return ("owner", did) if self._valid_did_str(did) else ("corrupt", None)
+
     def _revoke_and_clear_active(self):
-        """Under the grant lock: revoke whatever grant is active and remove it. Used by revoke,
-        and by re-sign / relink / unlink so a grant never outlives the agent it was signed for."""
-        grant = self._read_json(self.grant_path)
-        gid = grant.get("grant_id") if isinstance(grant, dict) else None
+        """Revoke the stored grant and clear the slot to 'no grant' (relink/unlink), so a grant never
+        outlives its agent. Clears by writing a blank record, not an unlink Windows can refuse."""
+        # Clear the slot before revoking the old id: a failed blank-write then leaves the old grant
+        # readable and honestly active, never inactive-because-revoked with its bytes still on disk.
+        gid = self._current_grant_id()
+        self._store_grant(None, None, False)
         if gid:
             self._add_revoked(gid)
-        try:
-            self.grant_path.unlink()
-        except OSError:
-            pass
         return gid
 
     def grant_catalog(self):
@@ -545,11 +597,46 @@ class Dashboard:
         dashboard opinion (so the flag can never drift from what the Governor enforces)."""
         return [dict(k, dangerous=G.is_dangerous(k["klass"])) for k in GRANT_KNOBS]
 
+    def _load_agent_record(self):
+        """The linked agent record, or None if none is linked. Raises ValueError on a present-but-corrupt
+        agent.json so the safety paths (revoke/link/grant_status) fail closed instead of laundering it
+        into 'no agent linked', which would let revoke blank a live grant or a relink orphan one."""
+        rec = self._read_json(self.agent_path)
+        if self.agent_path.exists():
+            # link_agent always writes a full {agent_did:str, nick} and unlink deletes the file, so the
+            # only legitimate "no agent" state is no file. A present file that is unreadable, not a dict,
+            # or missing a valid string did is corrupt: fail closed into guarded recovery.
+            if rec is None:
+                raise ValueError("the agent file is present but unreadable")
+            if not isinstance(rec, dict):
+                raise ValueError("the agent file is not a record")
+            if not self._valid_did_str(rec.get("agent_did")):
+                raise ValueError("the agent record has no valid did")
+            return rec
+        return None
+
     def agent_status(self):
         a = self._read_json(self.agent_path)
         if not isinstance(a, dict) or not a.get("agent_did"):
             return 200, {"linked": False, "agent_did": None, "nick": None}
         return 200, {"linked": True, "agent_did": a.get("agent_did"), "nick": a.get("nick") or ""}
+
+    def _agent_change_blocked(self):
+        """A refusal message if switching/unlinking the agent must be blocked, else None. relink/unlink
+        destroy the grant record; doing that while a grant is live, a stop is undelivered, or the record
+        is unreadable would strand a running agent. Gates on all three (a stop is itself active:false).
+        Call inside self._grant_lock so the check and the clear are atomic."""
+        gs = self.grant_status()[1]
+        if gs.get("active"):
+            return ("Stop your agent first. Switching or unlinking will not stop it - it keeps its "
+                    "permission until you sign a Stop.")
+        if gs.get("stop_unsent"):
+            return ("Your Stop has not reached your agent yet. Send it again from the banner first - "
+                    "unlinking now discards the signed stop and your agent keeps running.")
+        if gs.get("unknown"):
+            return ("Your grant record is unreadable, so we cannot confirm your agent is stopped. "
+                    "Resolve that before switching or unlinking.")
+        return None
 
     def link_agent(self, body):
         """Store the agent's PUBLIC did:key only. The dashboard never holds the agent's private
@@ -562,26 +649,53 @@ class Dashboard:
             return 400, {"error": "that is not a valid did:key"}
         if did_str == self.ks.public_did():
             return 400, {"error": "your agent must be a different identity from you"}
-        prev0 = self._read_json(self.agent_path)
-        prev0_did = prev0.get("agent_did") if isinstance(prev0, dict) else None
-        if prev0_did and prev0_did != did_str and self.grant_status()[1].get("active"):
-            return 409, {"error": "Stop your current agent first. Switching will not stop it - it keeps its "
-                                  "permission until you sign a Stop.", "need": "stop"}
         nick = body.get("nick")
         nick = nick.strip()[:40] if isinstance(nick, str) else ""
         with self._grant_lock:
-            prev = self._read_json(self.agent_path)
-            prev_did = prev.get("agent_did") if isinstance(prev, dict) else None
+            try:
+                prev = self._load_agent_record()
+                prev_did = prev.get("agent_did") if prev else None
+            except ValueError:
+                # agent.json unreadable but grant.json still names the agent the live grant is bound to.
+                # Relinking a did that does not own that grant would let the next Stop be signed for the
+                # wrong agent and falsely read as stopped, so refuse any did that is not the stored owner.
+                kind, stored_did = self._stored_grant_owner()
+                if kind == "unreadable":
+                    return 409, {"error": "Both your agent record and your grant record are unreadable, so we "
+                                 "cannot tell which agent a live grant belongs to. Resolve your grant record "
+                                 "before re-linking.", "need": "manual"}
+                if kind == "corrupt":
+                    return 409, {"error": "A grant is stored but its record is corrupt, so we cannot tell which "
+                                 "agent it belongs to. Resolve your grant record before re-linking.",
+                                 "need": "manual"}
+                if kind == "owner" and stored_did != did_str:
+                    return 409, {"error": "A grant is still stored for a different agent (%s). Re-link THAT "
+                                 "did to stop it first - pointing the dashboard at a new agent now would "
+                                 "leave the old one running with no way to stop it." % stored_did,
+                                 "need": "relink-stored", "stored_agent_did": stored_did}
+                self._write_json(self.agent_path, {"agent_did": did_str, "nick": nick})
+                return 200, {"ok": True, "agent_did": did_str, "nick": nick,
+                             "note": "your agent record was unreadable and has been rewritten - if a grant is still live, press Stop now"}
             if prev_did and prev_did != did_str:
-                self._revoke_and_clear_active()
+                # Linking the did that owns the stored grant re-associates (recovering from a mislink) and
+                # preserves the grant; without this, the false-stop guard would deadlock recovery. Any
+                # other did is a genuine switch that would destroy the grant, so gate it.
+                kind, stored_did = self._stored_grant_owner()
+                if not (kind == "owner" and stored_did == did_str):
+                    blocked = self._agent_change_blocked()
+                    if blocked:
+                        return 409, {"error": blocked, "need": "stop"}
+                    self._revoke_and_clear_active()
+            # A re-link, a first link, or a re-association all rewrite the agent WITHOUT clearing any stored
+            # grant, so a grant that outlived or mismatched its record stays addressable for a Stop.
             self._write_json(self.agent_path, {"agent_did": did_str, "nick": nick})
         return 200, {"ok": True, "agent_did": did_str, "nick": nick}
 
     def unlink_agent(self):
-        if self.grant_status()[1].get("active"):
-            return 409, {"error": "Stop your agent first. Unlinking will not stop it - it keeps its permission "
-                                  "until you sign a Stop.", "need": "stop"}
         with self._grant_lock:
+            blocked = self._agent_change_blocked()
+            if blocked:
+                return 409, {"error": blocked, "need": "stop"}
             self._revoke_and_clear_active()
             try:
                 self.agent_path.unlink()
@@ -649,34 +763,60 @@ class Dashboard:
             except Exception:
                 pass
         with self._grant_lock:
-            self._revoke_and_clear_active()
-            self._write_json(self.grant_path, grant)
+            # Store the superseding grant before revoking the id it replaces: if this first write fails,
+            # the old grant stays on disk and reads correctly as active, never inactive-because-revoked.
+            old_gid = self._current_grant_id()
+            self._store_grant(grant, None, False)
+            if old_gid and old_gid != grant_id:
+                self._add_revoked(old_gid)
             published, publish_detail = self._publish_grant(grant)
-            self._record_grant_publish(grant_id, published)
+            self._store_grant(grant, published, False)
         return 200, {"ok": True, "grant_id": grant_id, "expiry": now + dur, "allow": dict(allow),
                      "published": published, "publish_detail": publish_detail}
 
-    def _record_grant_publish(self, grant_id, published):
-        """Remember whether THIS grant reached the agent, so a failed publish can offer a persistent
-        'Send again' across a reload. Best-effort; never fails the sign/resend it records."""
-        try:
-            self._write_json(self.grant_publish_path, {"grant_id": grant_id, "published": bool(published)})
-        except Exception:
-            pass
-
     def resend_grant(self):
-        """Re-publish the ALREADY-SIGNED grant in grant.json to the owner slot. No re-sign, no passphrase:
-        it only re-transports owner-signed bytes that were already authorized, so it creates no new
-        authority, and never forces a full re-toggle + re-sign just to retry a transient publish.
-        Reports `published` honestly. If there is no signed grant to resend, says so."""
-        grant = self._read_json(self.grant_path)
-        if not isinstance(grant, dict) or not grant.get("grant_id"):
-            return 200, {"ok": False, "published": False,
-                         "detail": "there is no signed grant to resend; sign one first"}
+        """Re-publish the stored owner-signed grant (permissive or stop). No re-sign, no passphrase: it
+        only re-transports already-authorized bytes. The grant is re-read inside the lock (so a resend
+        racing a stop cannot write a stale permissive grant over the stop) and a permissive grant is
+        re-verified before transport (so a revoked/superseded grant left on disk never reaches the wire)."""
         with self._grant_lock:
+            try:
+                grant, _published, is_stop = self._load_grant_record()
+            except ValueError:
+                return 200, {"ok": False, "published": False,
+                             "detail": "your grant record is unreadable; sign a new grant"}
+            if not isinstance(grant, dict) or not grant.get("grant_id"):
+                return 200, {"ok": False, "published": False,
+                             "detail": "there is no signed grant to resend; sign one first"}
+            allow = grant.get("allow") if isinstance(grant.get("allow"), dict) else {}
+            if is_stop:
+                # A stop is empty-allow by definition; refuse a stored record whose is_stop flag disagrees
+                # with its bytes rather than re-transport a tampered record as a stop.
+                if allow:
+                    return 200, {"ok": False, "published": False,
+                                 "detail": "the stored stop looks tampered; sign a new stop"}
+            else:
+                owner_did = self.ks.public_did()
+                try:
+                    owner_pub = D.pub_raw_from_did(owner_did) if owner_did else None
+                except Exception:
+                    owner_pub = None
+                a = self._read_json(self.agent_path)
+                expected_agent = a.get("agent_did") if isinstance(a, dict) else None
+                try:
+                    revoked = self._read_revoked()
+                except ValueError:
+                    revoked = None
+                ok = (owner_pub is not None and revoked is not None and expected_agent is not None
+                      and G.verify_grant(owner_pub, grant, now=int(self.clock()),
+                                         revoked_ids=revoked, expected_agent=expected_agent))
+                if not ok:
+                    return 200, {"ok": False, "published": False,
+                                 "detail": "that grant is no longer valid; sign a new one"}
+            self._store_grant(grant, None, is_stop)
             published, publish_detail = self._publish_grant(grant)
-            self._record_grant_publish(grant.get("grant_id"), published)
-        return 200, {"ok": True, "grant_id": grant.get("grant_id"),
+            self._store_grant(grant, published, is_stop)
+        return 200, {"ok": True, "grant_id": grant.get("grant_id"), "is_stop": is_stop,
                      "published": published, "publish_detail": publish_detail}
 
     def _publish_grant(self, grant):
@@ -703,9 +843,17 @@ class Dashboard:
         catalog and, per active class, its ceiling and danger flag."""
         knobs = self.grant_catalog()
         agent = self.agent_status()[1]
-        grant = self._read_json(self.grant_path)
+        try:
+            grant, published, is_stop = self._load_grant_record()
+        except ValueError:
+            # Unreadable grant file: fail closed. We cannot prove the agent is stopped, so flag it loudly
+            # and treat it like a live grant for the change guards and resend, never paint "no grant".
+            return 200, {"active": False, "unknown": True, "knobs": knobs, "agent": agent, "allow": [],
+                         "unsent": False, "stop_unsent": False,
+                         "detail": "could not read your grant record - assume your agent is still running"}
         if not isinstance(grant, dict) or not grant.get("grant_id"):
-            return 200, {"active": False, "knobs": knobs, "agent": agent, "allow": []}
+            return 200, {"active": False, "unknown": False, "knobs": knobs, "agent": agent, "allow": [],
+                         "unsent": False, "stop_unsent": False}
         owner_did = self.ks.public_did()
         try:
             owner_pub = D.pub_raw_from_did(owner_did) if owner_did else None
@@ -716,22 +864,46 @@ class Dashboard:
             revoked = self._read_revoked()
         except ValueError:
             revoked = None
-        expected_agent = agent.get("agent_did")
-        valid = (revoked is not None and expected_agent is not None
+        agent_unreadable = False
+        try:
+            arec = self._load_agent_record()
+            expected_agent = arec.get("agent_did") if arec else None
+        except ValueError:
+            agent_unreadable = True
+            expected_agent = None
+        valid = (owner_pub is not None and revoked is not None and expected_agent is not None
                  and G.verify_grant(owner_pub, grant, now=now, revoked_ids=revoked,
                                     expected_agent=expected_agent))
         allow = grant.get("allow") if isinstance(grant.get("allow"), dict) else {}
+        # A stop grant (empty allow) is owner-valid but not active. Distinguish by the stored is_stop
+        # flag, never by inspecting allow, so nothing rides on empty == stop.
+        active = bool(valid and not is_stop and allow)
         allow_view = ([{"klass": k, "ceiling": allow[k], "dangerous": G.is_dangerous(k)}
-                       for k in sorted(allow) if k != "MODEL"] if valid else [])
+                       for k in sorted(allow) if k != "MODEL"] if active else [])
         try:
             expiry = int(grant.get("expiry"))
         except (TypeError, ValueError):
             expiry = now
-        pub = self._read_json(self.grant_publish_path)
-        unsent = bool(isinstance(pub, dict) and pub.get("grant_id") == grant.get("grant_id")
-                      and pub.get("published") is False)
+        # Anything other than a confirmed publish is unsent (fail safe): a permissive grant that did not
+        # land offers "Send again"; a stop that did not land must warn loud and never read as stopped.
+        delivered = (published is True)
+        unsent = bool((not is_stop) and valid and not delivered)
+        stop_unsent = bool(is_stop and not delivered)
+        # A stored grant we cannot prove inactive reads `unknown` (not "no grant") so the change guards and
+        # loud UI treat it as possibly-live: any provability input missing/unreadable, the grant bound to a
+        # different agent than the one linked, a tampered stop, or an unprovable owner did on the grant
+        # itself. Its own agent_did must be a provable string, else it cannot be bound to any agent.
+        grant_agent = grant.get("agent_did")
+        grant_agent_corrupt = not self._valid_did_str(grant_agent)
+        agent_mismatch = bool(self._valid_did_str(grant_agent) and expected_agent is not None and grant_agent != expected_agent)
+        cant_prove = (owner_pub is None or revoked is None or expected_agent is None or agent_unreadable
+                      or agent_mismatch or grant_agent_corrupt)
+        tampered_stop = bool(is_stop and allow)
+        unknown = bool((cant_prove and not is_stop) or tampered_stop or grant_agent_corrupt)
         return 200, {
-            "active": bool(valid),
+            "active": active,
+            "is_stop": is_stop,
+            "unknown": unknown,
             "grant_id": grant.get("grant_id"),
             "issued": grant.get("issued"),
             "expiry": expiry,
@@ -739,26 +911,39 @@ class Dashboard:
             "expires_in": max(0, expiry - now),
             "revoked": bool(revoked) and grant.get("grant_id") in revoked,
             "unsent": unsent,
+            "stop_unsent": stop_unsent,
             "agent_did": grant.get("agent_did"),
             "allow": allow_view,
             "knobs": knobs,
             "agent": agent,
+            "detail": ("could not fully verify your grant - assume your agent may still be running" if unknown else None),
         }
 
     def revoke_grant(self, body=None):
-        """STOP the agent. A real stop is a re-signed EMPTY-allow grant published to the owner slot
-        (Option A): the agent keeps existing but its auto-authority drops to zero, and the Governor's
-        forward-only high-water makes the stop PERMANENT once a single ~1-min tick reads it. There is NO
-        keyless stop in this trust model (a stop the agent will honour must be signed by the owner key),
-        so this DEMANDS the passphrase exactly like signing, and it REPORTS whether the stop reached the
-        agent (`published`) - it never tells the human the agent stopped when the write did not land.
-        A passphraseless revoke that only cleared LOCAL state would leave the slot's last permissive
-        grant in place, so the agent would run on until expiry while the UI claimed it had stopped."""
+        """STOP the agent: a re-signed empty-allow grant published to the owner slot drops its
+        auto-authority to zero, and the Governor's forward-only high-water makes it permanent once a tick
+        reads it. Demands the passphrase (a stop the agent will honour must be owner-signed) and reports
+        whether it reached the agent, so the human is never told stopped when the write did not land."""
         body = body or {}
-        agent = self._read_json(self.agent_path)
-        agent_did = agent.get("agent_did") if isinstance(agent, dict) else None
+        try:
+            arec = self._load_agent_record()
+        except ValueError:
+            # agent.json unreadable: a stop cannot be addressed and blanking would strand a running agent.
+            return 200, {"ok": False, "active": False, "stopped": False, "published": False, "need": "relink",
+                         "detail": "We cannot read which agent is linked, so a stop cannot be addressed to it. Re-link your agent's did:key, then press Stop."}
+        agent_did = arec.get("agent_did") if arec else None
         if not agent_did:
+            # No agent linked: only clear if there is genuinely no stored grant. A stored grant here is
+            # live for an agent we can no longer address, so refuse to blank it.
             with self._grant_lock:
+                try:
+                    g, _p, _s = self._load_grant_record()
+                except ValueError:
+                    return 200, {"ok": False, "active": False, "stopped": False, "published": False, "need": "relink",
+                                 "detail": "Your grant record is unreadable and no agent is linked. Re-link your agent's did:key, then press Stop."}
+                if isinstance(g, dict) and g.get("grant_id"):
+                    return 200, {"ok": False, "active": False, "stopped": False, "published": False, "need": "relink",
+                                 "detail": "A grant is still stored but no agent is linked to stop. Re-link your agent's did:key, then press Stop."}
                 self._revoke_and_clear_active()
             return 200, {"ok": True, "active": False, "stopped": False, "published": False,
                          "detail": "no agent is linked, so there is nothing to stop on the network"}
@@ -778,10 +963,31 @@ class Dashboard:
             except Exception:
                 pass
         with self._grant_lock:
-            self._revoke_and_clear_active()
+            # The stop is bound to the linked agent, so reporting "stopped" is only honest if the stored
+            # grant is provably for that same agent. Refuse a grant owned by a different agent, or one whose
+            # owner we cannot read (corrupt) or access (unreadable): such a stop would not cover it.
+            kind, stored_did = self._stored_grant_owner()
+            if kind == "owner" and stored_did != agent_did:
+                return 200, {"ok": False, "active": False, "stopped": False, "published": False,
+                             "need": "relink-stored", "stored_agent_did": stored_did,
+                             "detail": "The live grant is bound to a different agent (%s) than the one linked. "
+                             "Re-link that did, then press Stop - a stop for the current agent would not stop "
+                             "it." % stored_did}
+            if kind in ("corrupt", "unreadable"):
+                return 200, {"ok": False, "active": False, "stopped": False, "published": False,
+                             "need": "manual",
+                             "detail": "A grant is stored but we cannot read which agent it belongs to, so we "
+                             "cannot prove a stop would cover it. Resolve your grant record, then press Stop."}
+            old_gid = self._current_grant_id()
+            self._store_grant(stop_grant, None, True)
+            if old_gid and old_gid != stop_id:
+                self._add_revoked(old_gid)
             published, publish_detail = self._publish_grant(stop_grant)
+            self._store_grant(stop_grant, published, True)
+        detail = None if published else ("Stop signed but it did NOT reach your agent - it is still "
+                                         "running on its old grant. Press Stop again.")
         return 200, {"ok": True, "active": False, "stopped": bool(published),
-                     "published": published, "publish_detail": publish_detail}
+                     "published": published, "publish_detail": publish_detail, "detail": detail}
 
     def agent_feed(self):
         """What the public board shows of the linked agent RIGHT NOW: the jobs it posted or is
@@ -897,13 +1103,17 @@ class Dashboard:
         saved = self._read_json(self.tasks_path)
         tasks = saved.get("tasks") if isinstance(saved, dict) else None
         cfg = self._read_json(self.config_path)
-        model = cfg.get("model") if isinstance(cfg, dict) else None
+        model = cfg.get("model_choice") if isinstance(cfg, dict) else None
         agent = self._read_json(self.agent_path)
         try:
             secret = self._task_secret()
             secret_error = None
         except Exception:
             secret, secret_error = None, "your task-secret file is unreadable; fix or remove it"
+        # A completed Path A deploy bound to this agent sets TASK_SECRET on the gateway itself, so withhold
+        # it from the browser there and mark it managed. The manual path still needs the owner to copy it.
+        _dm, _dw, dep_state = self._deployed_config()
+        secret_managed = (dep_state == "ok")
         return 200, {
             "tasks": tasks if isinstance(tasks, list) else [],
             "published": saved.get("published") if isinstance(saved, dict) else None,
@@ -914,7 +1124,8 @@ class Dashboard:
             "max_task_len": MAX_TASK_LEN,
             "agent_linked": bool(isinstance(agent, dict) and agent.get("agent_did")),
             "has_key": self.ks.exists(),
-            "deploy": {"task_secret": secret,
+            "deploy": {"task_secret": (None if secret_managed else secret),
+                       "secret_managed": secret_managed,
                        "secret_error": secret_error,
                        "model": model or DEFAULT_MODEL,
                        "model_choices": MODEL_CHOICES},
@@ -986,7 +1197,9 @@ class Dashboard:
             cfg = self._read_json(self.config_path)
             if not isinstance(cfg, dict):
                 cfg = {}
-            cfg["model"] = model
+            # A pre-deploy CHOICE, never a deployed value. Kept distinct from the deploy record so the
+            # cost panel never reads a picker click as "what your agent is running".
+            cfg["model_choice"] = model
             self._write_json(self.config_path, cfg)
         return 200, {"ok": True, "model": model}
 
@@ -1063,17 +1276,134 @@ class Dashboard:
         return 200, {"ok": True, "model": model, "wake": wake,
                      "published": published, "publish_detail": detail}
 
-    def _current_wake(self):
-        """The wake interval we expect the agent to report on, for the health freshness window. The last
-        SIGNED cost config if any, else the DEPLOYED wake, else 15. Never raises."""
-        cur = self._read_json(self.cost_config_path)
-        w = cur.get("wake") if isinstance(cur, dict) else None
-        if w in self.WAKE_CHOICES:
-            return w
-        _, dep_wake = self._deployed_config()
-        return dep_wake or 15
+    def _activity_slot_key(self, secret):
+        """The unguessable activity-feed slot, derived IDENTICALLY to the gateway (agent/src/index.ts
+        activitySlotKey): 'a' + first 40 hex of sha256('flop-activity-slot|' + secret)."""
+        h = hashlib.sha256(("flop-activity-slot|" + secret).encode("utf-8")).hexdigest()
+        return "a" + h[:40]
 
-    def _model_health(self):
+    def activity_feed(self):
+        """The PRIVATE 'what it did' feed (Francisco's 'private to you'). The GATEWAY signs a small
+        bounded ring of confirmed-delivery digests into this unguessable TASK_SECRET-derived slot in the
+        AGENT's own namespace; we derive the same slot, read it, and VERIFY the ring under the agent did,
+        so a stranger's overwrite of the world-writable slot does not verify and is ignored (never a
+        forged 'what it did' line). Display only (M4): each digest is an untrusted string the browser
+        renders as text. Privacy is 'not public' (unguessable slot), not 'encrypted'. Never raises."""
+        agent = self._read_json(self.agent_path)
+        agent_did = agent.get("agent_did") if isinstance(agent, dict) else None
+        if not agent_did:
+            return 200, {"linked": False, "items": []}
+        try:
+            secret = self._task_secret()
+        except Exception:
+            return 200, {"linked": True, "items": [], "error": "your task-secret file is unreadable"}
+        try:
+            ns = D.did_note_ns(agent_did)
+            key = self._activity_slot_key(secret)
+            raw = self.pc.get_note(ns, key)
+        except Exception:
+            return 200, {"linked": True, "items": [], "error": "could not read the activity feed"}
+        if not raw:
+            # A genuinely absent slot is the ONLY "nothing yet" case. Anything present that does not
+            # yield a verified ring is a signal something is wrong (or a stranger wrote junk to the
+            # slot), so it must surface as an error, never a reassuring "nothing happened".
+            return 200, {"linked": True, "items": []}
+        ignored = {"linked": True, "items": [], "error": "the activity feed did not verify (ignored)"}
+        try:
+            env = json.loads(raw)
+            payload = env.get("payload")
+            sig = env.get("sig")
+            if not isinstance(payload, str) or not isinstance(sig, str):
+                return 200, ignored
+            nonce_canon = canon_int(env.get("nonce"), "nonce")
+            if not D.verify_by_did(agent_did, sig, P.note_sig_input(ns, key, nonce_canon, payload)):
+                return 200, ignored
+            arr = json.loads(payload)
+        except Exception:
+            return 200, ignored
+        if not isinstance(arr, list):
+            return 200, ignored
+        items = []
+        for it in arr[-12:]:
+            if not isinstance(it, dict):
+                continue
+            t = it.get("t") if (isinstance(it.get("t"), (int, float)) and not isinstance(it.get("t"), bool)) else None
+            d = it.get("d") if isinstance(it.get("d"), str) else ""
+            if d:
+                items.append({"t": t, "d": d[:120]})
+        return 200, {"linked": True, "items": items}
+
+    def _slot_config(self):
+        """Read the owner config slot BACK and verify it under the owner did. Returns (cfg_or_None, state)
+        where state is 'ok' (a verified config the agent would accept), 'absent' (the slot read succeeded
+        and holds nothing valid - the agent runs the DEPLOYED values), or 'unknown' (the read FAILED, so
+        we cannot tell). A local cost_config.json means only 'we wrote a file'; this is the only honest
+        test of 'signed and live'. Distinguishing 'absent' from 'unknown' matters: a flaky read must not
+        be read as 'no signed config' and let the panel assert the deployed model over a live signed one
+        Mirrors the agent's readOwnerConfig."""
+        owner_did = self.ks.public_did()
+        if not owner_did:
+            return None, "absent"
+        try:
+            ns, key = self._config_slot(owner_did)
+        except Exception:
+            return None, "unknown"
+        # Prefer a reader that distinguishes a 404 (absent) from a transport failure (unknown); fall back
+        # to the plain read for test doubles, treating a None there as 'absent' (they never fake a timeout).
+        getter = getattr(self.pc, "get_note_state", None)
+        if callable(getter):
+            try:
+                st, raw = getter(ns, key)
+            except Exception:
+                return None, "unknown"
+            if st == "error":
+                return None, "unknown"
+            if st == "absent" or not raw:
+                return None, "absent"
+        else:
+            try:
+                raw = self.pc.get_note(ns, key)
+            except Exception:
+                return None, "unknown"
+            if not raw:
+                return None, "absent"
+        try:
+            env = json.loads(raw)
+            payload = env.get("payload")
+            sig = env.get("sig")
+            if not isinstance(payload, str) or not isinstance(sig, str):
+                return None, "absent"
+            nonce_canon = canon_int(env.get("nonce"), "nonce")
+            if not D.verify_by_did(owner_did, sig, P.note_sig_input(ns, key, nonce_canon, payload)):
+                return None, "absent"
+            obj = json.loads(payload)
+        except Exception:
+            return None, "absent"
+        if not isinstance(obj, dict):
+            return None, "absent"
+        m = obj.get("model")
+        w = obj.get("wake")
+        if not (isinstance(m, str) and m.strip() and len(m) <= 128):
+            return None, "absent"
+        if isinstance(w, bool) or w not in self.WAKE_CHOICES:
+            return None, "absent"
+        return {"model": m.strip(), "wake": w}, "ok"
+
+    def _current_wake(self):
+        """The wake interval for the health freshness window: the wake the agent ACTUALLY obeys. When a
+        config verifies on the slot the agent takes model+wake as a PAIR from it, so the slot's wake alone
+        governs; when we could NOT read the slot, fall to the SHORTEST plausible wake so the freshness
+        window can only tighten under uncertainty (never hide a dead agent); otherwise the deployed wake,
+        else 15."""
+        slot, sstate = self._slot_config()
+        if slot is not None:
+            return slot["wake"]
+        if sstate == "unknown":
+            return min(self.WAKE_CHOICES)
+        _dm, dep_wake, _st = self._deployed_config()
+        return dep_wake if dep_wake in self.WAKE_CHOICES else 15
+
+    def _model_health(self, wake=None):
         """The model-health light. The GATEWAY writes a SIGNED health note ({payload:{status,model,ts},
         nonce, sig}) to the agent's own <shardKey>-health slot after each model call; we read it and
         RE-VERIFY under the agent did, so a stranger's overwrite of the world-writable slot cannot fake
@@ -1109,7 +1439,7 @@ class Dashboard:
         ts = rec.get("ts")
         model = rec.get("model") if isinstance(rec.get("model"), str) else ""
         status_raw = rec.get("status")
-        stale_after = max(self._current_wake() * 3 * 60, 20 * 60)
+        stale_after = max((wake if wake in self.WAKE_CHOICES else self._current_wake()) * 3 * 60, 20 * 60)
         SKEW = 300
         ok_ts = isinstance(ts, (int, float)) and not isinstance(ts, bool) and math.isfinite(ts)
         age = (self.clock() - ts) if ok_ts else None
@@ -1124,14 +1454,28 @@ class Dashboard:
         return {"status": "error", "model": model, "detail": "the model did not answer; try another model"}
 
     def _deployed_config(self):
-        """The model + wake the DEPLOY set on the agent (recorded into agent_config.json by the deploy
-        engine and the model picker). This is what the agent actually runs until the owner signs a
-        post-deploy cost config, so the cost panel must seed from it, not a hardcoded default. Never raises."""
-        cfg = self._read_json(self.config_path)
-        cfg = cfg if isinstance(cfg, dict) else {}
-        model = cfg.get("model") if isinstance(cfg.get("model"), str) else None
-        wake = cfg.get("wake") if cfg.get("wake") in self.WAKE_CHOICES else None
-        return model, wake
+        """The model + wake a REAL deploy set, from the deploy record (deploy.json), and ONLY when that
+        record is bound to the CURRENTLY-LINKED agent - so a stale record from a prior agent, or a
+        Path-B link with no deploy at all, never masquerades as what is running.
+        Returns (model, wake, state): state is 'ok' (a usable record for this agent), 'unknown' (the
+        record is present but unreadable, or for this agent yet carries no model), or 'none' (no record
+        for this agent). Never raises."""
+        agent = self._read_json(self.agent_path)
+        agent_did = agent.get("agent_did") if isinstance(agent, dict) else None
+        raw = self._read_json(self.deploy_state_path)
+        if raw is None and self.deploy_state_path.exists():
+            return None, None, "unknown"   # present but unreadable/corrupt
+        if not isinstance(raw, dict) or not agent_did or raw.get("our_did") != agent_did:
+            return None, None, "none"
+        # Only a COMPLETED deploy ('live') describes what the gateway runs. A record mid-deploy or from a
+        # partly-failed re-deploy (status != live) is not trustworthy as 'deployed'.
+        if raw.get("status") != "live":
+            return None, None, "unknown"
+        model = raw.get("model") if (isinstance(raw.get("model"), str) and raw.get("model").strip()) else None
+        wake = raw.get("wake") if raw.get("wake") in self.WAKE_CHOICES else None
+        if model is None:
+            return None, wake, "unknown"   # a deploy for THIS agent, but from before model was recorded
+        return model, wake, "ok"
 
     def cost_config_status(self):
         """The dashboard cost panel: what the agent is ACTUALLY running now, the choices to offer, and
@@ -1141,22 +1485,65 @@ class Dashboard:
         ground truth of what the gateway last actually called, so it labels the running line."""
         cur = self._read_json(self.cost_config_path)
         cur = cur if isinstance(cur, dict) else {}
-        dep_model, dep_wake = self._deployed_config()
-        health = self._model_health()
-        signed = bool(cur.get("model"))
-        if signed:
-            model = cur.get("model")
-            wake = cur.get("wake") if cur.get("wake") in self.WAKE_CHOICES else (dep_wake or 15)
-            source = "signed"
+        cur_model = cur.get("model") if (isinstance(cur.get("model"), str) and cur.get("model").strip()) else None
+        cur_wake = cur.get("wake") if cur.get("wake") in self.WAKE_CHOICES else None
+        dep_model, dep_wake, dep_state = self._deployed_config()
+        slot, sstate = self._slot_config()
+        agent = self._read_json(self.agent_path)
+        linked = bool(isinstance(agent, dict) and agent.get("agent_did"))
+        # Freshness window uses the wake the agent ACTUALLY obeys: the slot's alone when a config verifies;
+        # the SHORTEST wake when we could not read the slot (tighten under uncertainty); else the deployed
+        # wake. The more-lenient choice would let a dead 1-min agent read healthy for hours.
+        if slot is not None:
+            fresh_wake = slot["wake"]
+        elif sstate == "unknown":
+            fresh_wake = min(self.WAKE_CHOICES)
         else:
-            model = dep_model or DEFAULT_MODEL
+            fresh_wake = dep_wake if dep_wake in self.WAKE_CHOICES else 15
+        health = self._model_health(fresh_wake)
+        # The VERIFIED SLOT is authoritative: the agent runs signed.model||MODEL_NAME and takes wake as a
+        # PAIR from the same signed envelope, so a config that verifies on the slot IS what runs - never
+        # demoted to the deployed record because a later local save failed to publish. When we could not
+        # READ the slot (sstate unknown), we cannot claim ANY source is live. The local cost_config.json
+        # only tells us whether the owner has an unsent change on top.
+        if slot is not None:
+            model = slot["model"]
+            wake = slot["wake"]
+            source = "signed"
+        elif sstate == "unknown":
+            model = None
+            wake = None
+            source = "unknown"
+        elif dep_state == "ok":
+            model = dep_model
             wake = dep_wake or 15
-            source = "deployed" if (dep_model or dep_wake) else "default"
-        running_model = health.get("model") if isinstance(health, dict) and health.get("model") else model
+            source = "deployed"
+        elif dep_state == "unknown" or linked:
+            model = None
+            wake = None
+            source = "unknown"
+        else:
+            model = DEFAULT_MODEL
+            wake = 15
+            source = "default"
+        # An UNSENT local change on top of what is live. Computed OUTSIDE the slot branch so a first-ever
+        # config save whose publish failed (slot still absent) is still flagged. But NOT when we could not
+        # read the slot (sstate unknown): there we already say "cannot tell", so also asserting "a change
+        # has not reached your agent" is a claim we cannot prove.
+        pending = bool(cur_model is not None and sstate != "unknown" and (slot is None
+                       or cur_model != slot["model"]
+                       or (cur_wake is not None and cur_wake != slot["wake"])))
+        # The actually-running model, ONLY from a live report (ok/error). A stale or paused note names
+        # whatever model was LAST called - possibly hours ago, or an attacker's replay of an old valid
+        # envelope - so it must not be presented as running. null = not reported.
+        hstatus = health.get("status") if isinstance(health, dict) else None
+        running_model = (health.get("model") if (isinstance(health, dict) and hstatus in ("ok", "error")
+                         and health.get("model")) else None)
         return 200, {
             "model": model,
             "wake": wake,
             "source": source,
+            "pending": pending,
             "running_model": running_model,
             "published": cur.get("published"),
             "updated": cur.get("updated"),
@@ -1311,6 +1698,8 @@ def make_handler(dash):
                 return self._send(*dash.agent_status())
             if path == "/api/agent/feed":
                 return self._send(*dash.agent_feed())
+            if path == "/api/activity":
+                return self._send(*dash.activity_feed())
             if path == "/api/grant":
                 return self._send(*dash.grant_status())
             if path == "/api/tasks":

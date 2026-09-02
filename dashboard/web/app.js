@@ -41,11 +41,41 @@
     clearTimeout(toastT); toastT = setTimeout(function () { toastEl.classList.remove("show"); }, 2100);
   };
 
+  // The abort must be LONGER than the server path it guards, or it fires mid-operation exactly in the
+  // "it did not land" case it exists to surface. The safety WRITE paths run
+  // set_note(confirm=True) = up to ~62s (3 writes + 3 confirm reads at a 10s socket timeout each); a say
+  // is a write + a read-back (~20s); the board post and the cost GET each do multiple protocol reads.
+  var SLOW_75 = ["/api/grant/revoke", "/api/grant/resend", "/api/grant/sign", "/api/tasks/save", "/api/cost/save"];
+  // /api/agent (link) and /api/agent/unlink do no publish themselves but CONTEND for _grant_lock, so they
+  // can wait out an in-flight grant publish; give them headroom rather than abort at 15s mid-wait.
+  var SLOW_45 = ["/api/room/say", "/api/board/post", "/api/agent", "/api/agent/unlink"];
+  // These GETs each call the board (kibble client, 15s socket) - at the 15s default they race the server;
+  // give them headroom so a slow board reads as "could not reach the board", not "server did not respond".
+  var SLOW_25 = ["/api/cost", "/api/board", "/api/board/mine", "/api/agent/feed"];
+  function timeoutFor(path) {
+    if (SLOW_75.indexOf(path) >= 0) return 75000;
+    if (SLOW_45.indexOf(path) >= 0) return 45000;
+    if (SLOW_25.indexOf(path) >= 0) return 25000;
+    return 15000;
+  }
   function api(method, path, body) {
     var opts = { method: method, headers: {} };
     if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+    // A hung local server must not leave a caller (the kill switch above all) waiting forever with its
+    // button disabled. Abort so the request surfaces as a retryable failure - but not before the server's
+    // own worst-case finishes.
+    var ctl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+    var timer = null;
+    if (ctl) { opts.signal = ctl.signal; timer = setTimeout(function () { ctl.abort(); }, timeoutFor(path)); }
+    var clear = function () { if (timer) { clearTimeout(timer); timer = null; } };
     return fetch(path, opts).then(function (r) {
-      return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
+      // Clear only AFTER the body is read - fetch resolves on headers, and a stalled body would
+      // otherwise leave the promise unsettled with the abort already disarmed, wedging the caller.
+      return r.json().then(function (data) { clear(); return { ok: r.ok, status: r.status, data: data }; },
+                           function (e) { clear(); throw e; });
+    }, function (e) {
+      clear();
+      throw e;
     });
   }
 
@@ -252,7 +282,9 @@
     var b = document.getElementById(targetId || "cost-health");
     if (!b) return;
     hh = hh || { status: "unknown" };
-    var m = hh.model ? " (" + hh.model + ")" : "";
+    // hh.model is signed by the AGENT key - a separate, possibly-compromised identity - so it is
+    // untrusted text on the safety banner. Sanitize + cap it like every other protocol string.
+    var m = hh.model ? " (" + displayText(String(hh.model)).slice(0, 64) + ")" : "";
     var cls = "banner", txt;
     if (hh.status === "ok") { cls += " good"; txt = "Model working" + m + (hh.detail ? " · " + hh.detail : ""); }
     else if (hh.status === "error") { cls += " err"; txt = "Model not responding" + m + " - pick another." + (hh.detail ? " " + hh.detail : ""); }
@@ -273,15 +305,23 @@
   function loadCost() {
     api("GET", "/api/cost").then(function (r) {
       var d = r.data || {};
-      selectedCostWake = d.wake || 15;
+      // wake can be null (source "unknown"): show no highlighted interval rather than a false current one.
+      selectedCostWake = (typeof d.wake === "number") ? d.wake : null;
       renderCostWake(d.wake_choices);
       updateCostWakeHint();
       var src = document.getElementById("cost-source");
       if (src) {
+        // running_model is null unless a LIVE (ok/error) health report named it - never a stale guess.
+        // It is agent-signed (untrusted), so sanitize + cap it here too.
+        var running = d.running_model ? " Your agent last ran " + displayText(String(d.running_model)).slice(0, 64) + "." : "";
+        // A verified slot config IS what runs; `pending` means the owner has an unsent change on top.
+        var pend = d.pending ? " (a newer change you saved has not reached your agent yet)" : "";
         if (d.source === "signed") {
-          src.textContent = "Your signed setting" + (d.published === false ? ", not yet reached your agent." : ".");
+          src.textContent = "Your signed setting is live" + pend + "." + running;
         } else if (d.source === "deployed") {
-          src.textContent = "Set when you deployed: " + (d.model || "") + ". Change it below.";
+          src.textContent = "Set when you deployed: " + (d.model || "") + ". Change it below." + pend + running;
+        } else if (d.source === "unknown") {
+          src.textContent = "We cannot tell what your agent is running from here right now." + pend + running + " Set it below.";
         } else {
           src.textContent = "No model set yet. Choose one below.";
         }
@@ -460,6 +500,7 @@
     var apw = document.getElementById("approvepw"); if (apw) apw.value = "";
     var tpw = document.getElementById("taskpw"); if (tpw) tpw.value = "";
     var kpw = document.getElementById("costpw"); if (kpw) kpw.value = "";
+    var spw = document.getElementById("stoppw"); if (spw) spw.value = "";
     if (name === "rooms") {
       loadRooms();
       updateLockUI();
@@ -492,11 +533,20 @@
   function displayText(s) {
     if (typeof s !== "string") return "";
     var out = "";
-    for (var i = 0; i < s.length; i++) {
-      var c = s.charCodeAt(i);
-      var bad = (c < 0x20) || (c >= 0x7f && c <= 0x9f) || c === 0x200e || c === 0x200f ||
-                (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
-      out += bad ? " " : s.charAt(i);
+    for (var i = 0; i < s.length;) {
+      var cp = s.codePointAt(i);
+      var wide = cp > 0xffff;
+      // Strip control chars, bidi overrides/isolates, the zero-width set, BOM, and the Unicode Tag
+      // block - all invisible, and dangerous on the approval card where these are the signed bytes.
+      var bad = (cp < 0x20) || (cp >= 0x7f && cp <= 0x9f) || cp === 0x00ad || cp === 0x061c ||
+                cp === 0x115f || cp === 0x1160 || cp === 0x180e ||
+                (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x202e) ||
+                (cp >= 0x2060 && cp <= 0x2064) || (cp >= 0x2066 && cp <= 0x2069) ||
+                cp === 0x2028 || cp === 0x2029 ||
+                cp === 0x3164 || cp === 0xfeff || cp === 0xffa0 ||
+                (cp >= 0xe0000 && cp <= 0xe007f);
+      out += bad ? " " : String.fromCodePoint(cp);
+      i += wide ? 2 : 1;
     }
     return out;
   }
@@ -536,10 +586,12 @@
     if (mine) {
       addMsg("mine", "you", "Y", "you", "signed", "var(--human)", m.text);
     } else if (verified) {
-      var sd = shortDid(m.from);
+      // 'verified' is only a did:key prefix check server-side; the multibase tail is untrusted text, so
+      // sanitize it before it reaches the name/avatar.
+      var sd = displayText(shortDid(String(m.from || "")));
       addMsg("", "o", (sd[0] || "?").toUpperCase(), sd, "signed", "var(--proto)", m.text);
     } else {
-      addMsg("", "o", "~", m.from || "~anon", null, null, m.text);
+      addMsg("", "o", "~", displayText(String(m.from || "~anon")).slice(0, 64), null, null, m.text);
     }
   }
 
@@ -557,7 +609,7 @@
         var isMb = r.kind === "mailbox" || r.kind === "mailbox_private";
         b.appendChild(el("span", "kind" + (isMb ? " mb" : ""), isMb ? "mailbox" : "room"));
         b.appendChild(el("span", "nm", r.room));
-        b.title = r.topic || "";
+        b.title = displayText(String(r.topic || "")).slice(0, 200);
         b.onclick = function () { openRoom(r.room); };
         roomlist.appendChild(b);
       });
@@ -777,7 +829,12 @@
     row.appendChild(el("span", "st " + status, status));
     var mid = el("div"); mid.style.flex = "1";
     var titleRow = el("div", "jobtitle");
-    if (j.category) titleRow.appendChild(el("span", "cat " + j.category, j.category));
+    if (j.category) {
+      // Allowlist the CLASS token (unvalidated board text must not attach arbitrary classes); show
+      // the real category as sanitized text.
+      var cat = (["explain", "research", "review", "build", "coordinate"].indexOf(j.category) >= 0) ? j.category : "other";
+      titleRow.appendChild(el("span", "cat " + cat, displayText(String(j.category))));
+    }
     titleRow.appendChild(el("span", "t", displayText(j.title) || "(untitled)"));
     mid.appendChild(titleRow);
     if (j.body) mid.appendChild(el("div", "d", displayText(j.body)));
@@ -815,7 +872,10 @@
         row.appendChild(el("span", "st open", "posted"));
         var mid = el("div"); mid.style.flex = "1";
         var tr = el("div", "jobtitle");
-        if (j.category) tr.appendChild(el("span", "cat " + j.category, j.category));
+        if (j.category) {
+          var mcat = (["explain", "research", "review", "build", "coordinate"].indexOf(j.category) >= 0) ? j.category : "other";
+          tr.appendChild(el("span", "cat " + mcat, displayText(String(j.category))));
+        }
         tr.appendChild(el("span", "t", displayText(j.title)));
         mid.appendChild(tr);
         mid.appendChild(el("div", "d mono", j.job_id));
@@ -880,17 +940,39 @@
     api("GET", "/api/agent").then(function (res) {
       var a = res.data || {}, sel = document.getElementById("agentsel");
       reflectAgentPill(a);
-      if (!a.linked) { sel.textContent = "No agent linked yet"; showAgentState(false); return; }
+      if (!a.linked) {
+        sel.textContent = "No agent linked yet";
+        showAgentState(false);
+        // A grant can outlive its agent record (agent.json corrupt/lost while a grant is live). The
+        // unlinked panel would otherwise say nothing while an agent runs on. Check the grant and warn
+        // loudly here, in a banner OUTSIDE #agent-linked (which is hidden now).
+        api("GET", "/api/grant").then(function (gr) {
+          var g = gr.data || {}, w = document.getElementById("unlinked-warn");
+          if (!w) return;
+          if (g.unknown || g.stop_unsent || g.active) {
+            w.textContent = displayText(String(g.detail || "")).slice(0, 200)
+              || "A grant may still be authorizing a running agent, but no agent is linked here. Re-link your agent's did:key, then Stop it.";
+            w.classList.remove("hidden");
+          } else {
+            w.classList.add("hidden");
+          }
+        }).catch(function () {});
+        return;
+      }
       sel.textContent = (a.nick ? displayText(a.nick) + " · " : "") + shortDid(a.agent_did);
       showAgentState(true);
-      loadGrant(); loadFeed(); loadPending(); loadAgentHealth();
+      loadGrant(); loadFeed(); loadPending(); loadAgentHealth(); loadActivity();
     }).catch(function () { toast("The local server did not respond"); });
   };
 
   function loadAgentHealth() {
     api("GET", "/api/cost").then(function (r) {
       renderHealth((r.data || {}).health, "agent-health");
-    }).catch(function () {});
+    }).catch(function () {
+      // Never leave the light stuck on its literal "Checking..." default - a frozen health light is
+      // exactly the silent failure it exists to prevent. Paint an explicit unknown.
+      renderHealth({ status: "unknown", detail: "could not read the health report" }, "agent-health");
+    });
   }
 
   window.linkAgent = function () {
@@ -965,9 +1047,35 @@
       var state = document.getElementById("agentstate"),
           stext = document.getElementById("agentstatetext"),
           line = document.getElementById("grantline"),
-          wake = document.getElementById("wake-banner");
+          wake = document.getElementById("wake-banner"),
+          unsent = document.getElementById("grant-unsent"),
+          stopUnsent = document.getElementById("stop-unsent");
+      // A stop that did NOT reach the agent is the safety-critical state: the agent is STILL RUNNING.
+      // It must win over every other line here - never let the panel read "asleep/no grant" over it,
+      // and hide the ordinary wake/grant-unsent prompts so only the loud, retryable warning shows.
+      if (g.stop_unsent) {
+        if (stopUnsent) stopUnsent.classList.remove("hidden");
+        if (wake) wake.classList.add("hidden");
+        if (unsent) unsent.classList.add("hidden");
+        state.className = "live warn";
+        stext.textContent = "Stop not delivered - agent still running";
+        line.textContent = "Your Stop did not reach your agent. Send it again from the banner below.";
+        return;
+      }
+      // The server could not read the grant record (fail-closed unknown). It cannot prove the agent is
+      // stopped, so we must not paint "no grant" - warn loudly that the agent may still be running.
+      if (g.unknown) {
+        if (stopUnsent) stopUnsent.classList.add("hidden");
+        if (wake) wake.classList.add("hidden");
+        if (unsent) unsent.classList.add("hidden");
+        state.className = "live warn";
+        stext.textContent = "Grant record unreadable - assume your agent is still running";
+        line.textContent = displayText(String(g.detail || "")).slice(0, 200)
+          || "Could not read your grant record. Sign a Stop to be sure it is not running.";
+        return;
+      }
+      if (stopUnsent) stopUnsent.classList.add("hidden");
       if (wake) wake.classList.toggle("hidden", !(!g.active && !g.revoked));
-      var unsent = document.getElementById("grant-unsent");
       if (unsent) unsent.classList.toggle("hidden", !g.unsent);
       if (g.active) {
         state.className = "live on"; stext.textContent = "Running on auto";
@@ -979,8 +1087,18 @@
         stext.textContent = g.revoked ? "Revoked, everything asks you" : "No grant, everything asks you";
         line.textContent = g.revoked ? "Revoked. Sign a new grant to run on auto again." : "Sign a grant to let it act on its own.";
       }
-    }).catch(function () {});
+    }).catch(function () {
+      var state = document.getElementById("agentstate"), line = document.getElementById("grantline");
+      if (state) state.className = "live off";
+      var st = document.getElementById("agentstatetext"); if (st) st.textContent = "Could not read the grant";
+      if (line) line.textContent = "Reload to try again; your agent's state on the network is unchanged.";
+    });
   }
+
+  // Serialize the grant WRITE ops (sign, stop, resend) client-side: each holds the server's _grant_lock
+  // for up to ~62s, so letting one queue behind another could blow past the abort budget mid-publish -
+  // the exact "did it land" ambiguity we are removing, and it can hit the kill switch.
+  var grantOpInFlight = false;
 
   window.signGrant = function () {
     var allow = {}, bad = false;
@@ -995,6 +1113,8 @@
     var pw = document.getElementById("grantpw").value || "";
     if (!pw) { toast("Enter your passphrase to sign the grant"); return; }
     var dur = parseInt(document.getElementById("grantdur").value, 10);
+    if (grantOpInFlight) { toast("A grant action is still finishing - give it a moment."); return; }
+    grantOpInFlight = true;
     var btn = document.getElementById("signgrantbtn"); if (btn) btn.disabled = true;
     api("POST", "/api/grant/sign", { allow: allow, duration_seconds: dur, passphrase: pw }).then(function (res) {
       if (res.status === 403) { toast((res.data && res.data.error) || "That passphrase did not unlock your key"); return; }
@@ -1006,24 +1126,37 @@
         toast("Grant signed and sent to your agent.");
       }
     }).catch(function () { toast("The local server did not respond"); })
-      .then(function () { document.getElementById("grantpw").value = ""; if (btn) btn.disabled = false; });
+      .then(function () { grantOpInFlight = false; document.getElementById("grantpw").value = ""; if (btn) btn.disabled = false; });
   };
 
   window.resendGrant = function () {
-    var btn = document.querySelector("#grant-unsent button"); if (btn) btn.disabled = true;
+    if (grantOpInFlight) { toast("A grant action is still finishing - give it a moment."); return; }
+    grantOpInFlight = true;
+    var sel = "#grant-unsent button, #stop-unsent button";
+    document.querySelectorAll(sel).forEach(function (b) { b.disabled = true; });
     api("POST", "/api/grant/resend", {}).then(function (res) {
-      if (!res.ok || !res.data.ok) { toast((res.data && res.data.detail) || "Could not resend the grant"); return; }
+      if (!res.ok || !res.data.ok) { loadGrant(); toast((res.data && res.data.detail) || "Could not resend"); return; }
+      var isStop = res.data.is_stop === true;
       loadGrant();
-      toast(res.data.published === false
-        ? "Still could not reach your agent. Check your connection and try once more."
-        : "Grant sent to your agent.");
+      if (res.data.published === false) {
+        toast(isStop
+          ? "Still could not reach your agent - it is STILL RUNNING. Check your connection and send the stop again."
+          : "Still could not reach your agent. Check your connection and try once more.");
+      } else {
+        toast(isStop ? "Stop delivered. Your agent halts within a minute." : "Grant sent to your agent.");
+      }
     }).catch(function () { toast("The local server did not respond"); })
-      .then(function () { if (btn) btn.disabled = false; });
+      .then(function () { grantOpInFlight = false; document.querySelectorAll(sel).forEach(function (b) { b.disabled = false; }); });
   };
 
   window.openStopModal = function () {
+    // A resend is still holding the server lock; opening Stop now would queue behind it past the abort.
+    if (grantOpInFlight) { toast("A grant action is still finishing - give it a moment, then Stop."); return; }
     var m = document.getElementById("stopmodal");
     var pw = document.getElementById("stoppw"); if (pw) pw.value = "";
+    // Always re-enable: a prior attempt that hung or errored must never leave the kill switch dead.
+    var b = document.getElementById("confirmstopbtn"); if (b) b.disabled = false;
+    var merr = document.getElementById("stopmodalerr"); if (merr) merr.classList.add("hidden");
     m.classList.remove("hidden");
     if (pw) pw.focus();
   };
@@ -1041,19 +1174,34 @@
   window.confirmStop = function () {
     var pw = document.getElementById("stoppw").value || "";
     if (!pw) { toast("Enter your passphrase to sign the stop (a real stop must be signed by your key)"); return; }
+    if (grantOpInFlight) { toast("A grant action is still finishing - give it a moment, then Stop."); return; }
+    grantOpInFlight = true;
     var btn = document.getElementById("confirmstopbtn"); if (btn) btn.disabled = true;
+    var merr = document.getElementById("stopmodalerr");
+    var showModalErr = function (msg) { if (merr) { merr.textContent = msg; merr.classList.remove("hidden"); } };
     api("POST", "/api/grant/revoke", { passphrase: pw }).then(function (res) {
-      if (res.status === 403) { toast((res.data && res.data.error) || "That passphrase did not unlock your key"); return; }
-      if (!res.ok || !res.data.ok) { toast((res.data && res.data.error) || "Could not stop the agent"); return; }
+      // Every failure branch leaves a PERSISTENT in-modal error, not just a fading toast, so a distracted
+      // owner never returns to a modal that looks untouched over an agent that did not stop.
+      if (res.status === 403) { showModalErr((res.data && res.data.error) || "That passphrase did not unlock your key"); toast("That passphrase did not unlock your key"); return; }
+      if (!res.ok || !res.data.ok) { loadGrant(); showModalErr((res.data && res.data.error) || "Could not stop the agent - your agent may still be running."); toast("Could not stop the agent"); return; }
+      if (res.data.published === false) {
+        // The stop did NOT land. The agent is STILL RUNNING. Do not close the modal or repaint
+        // "stopped": loadGrant() surfaces the persistent stop-unsent warning + its resend, and the modal
+        // stays open with a persistent (not just a fading toast) error so a distracted owner still sees it.
+        loadGrant();
+        showModalErr("Stop signed but it did NOT reach your agent - it is STILL RUNNING. Press Stop again.");
+        toast("Stop signed but it did NOT reach your agent - it is STILL RUNNING. Press Stop again.");
+        return;
+      }
       closeStopModal();
       loadGrant();
-      if (res.data.published === false) {
-        toast("Stop signed, but it could not reach your agent. Check your connection and press Stop again.");
-      } else {
-        toast("Agent stopped. It halts within a minute and stays stopped until you sign a new grant.");
-      }
-    }).catch(function () { toast("The local server did not respond"); })
-      .then(function () { if (btn) btn.disabled = false; });
+      toast("Agent stopped. It halts within a minute and stays stopped until you sign a new grant.");
+    }).catch(function () {
+      // A hung/aborted request: reconcile the panel against server truth rather than leave stale text.
+      loadGrant();
+      showModalErr("Could not confirm the stop reached your agent. Check the banner and press Stop again.");
+      toast("The local server did not respond");
+    }).then(function () { grantOpInFlight = false; var p = document.getElementById("stoppw"); if (p) p.value = ""; if (btn) btn.disabled = false; });
   };
 
   function loadFeed() {
@@ -1067,11 +1215,43 @@
         ev.appendChild(el("span", "mk " + (it.role === "posted" ? "m-agent" : "m-good")));
         var body = el("div"); body.style.flex = "1";
         body.appendChild(el("div", "line", (it.role === "posted" ? "Posted" : "Working") + ": " + displayText(it.title)));
-        body.appendChild(el("div", "meta", (it.category || "") + " · " + (it.status || "") + " · ↑" + it.useful_n + " ↓" + it.not_n));
+        body.appendChild(el("div", "meta", displayText(it.category || "") + " · " + displayText(it.status || "") + " · ↑" + it.useful_n + " ↓" + it.not_n));
         ev.appendChild(body);
         wrap.appendChild(ev);
       });
     }).catch(function () {});
+  }
+
+  function relTime(sec) {
+    var now = Math.floor(Date.now() / 1000), a = Math.max(0, now - sec);
+    if (a < 60) return a + "s ago";
+    if (a < 3600) return Math.floor(a / 60) + "m ago";
+    if (a < 86400) return Math.floor(a / 3600) + "h ago";
+    return Math.floor(a / 86400) + "d ago";
+  }
+
+  // The PRIVATE 'what it did' feed: confirmed actions the gateway signed into your unguessable slot.
+  // Untrusted display-only text (rendered via el()/textContent, never HTML).
+  function loadActivity() {
+    api("GET", "/api/activity").then(function (r) {
+      var d = r.data || {}, items = d.items || [], wrap = document.getElementById("activity");
+      if (!wrap) return;
+      wrap.textContent = "";
+      if (d.error) { wrap.appendChild(el("div", "hint", displayText(String(d.error)))); return; }
+      if (!items.length) { wrap.appendChild(el("div", "hint", "Nothing yet - your agent's confirmed actions will appear here, only for you.")); return; }
+      items.slice().reverse().forEach(function (it) {
+        var ev = el("div", "ev");
+        ev.appendChild(el("span", "mk m-good"));
+        var body = el("div"); body.style.flex = "1";
+        body.appendChild(el("div", "line", displayText(String(it.d || ""))));
+        if (typeof it.t === "number" && isFinite(it.t)) body.appendChild(el("div", "meta", relTime(it.t)));
+        ev.appendChild(body);
+        wrap.appendChild(ev);
+      });
+    }).catch(function () {
+      var wrap = document.getElementById("activity");
+      if (wrap) { wrap.textContent = ""; wrap.appendChild(el("div", "hint", "Could not read your private activity feed.")); }
+    });
   }
 
   var taskState = [];
@@ -1081,15 +1261,47 @@
   var taskMax = 8;
   var taskSchedules = ["once", "hourly", "daily", "weekly"];
   var TASK_DRAFT_KEY = "flop.taskdraft";
+  // Namespace the draft by the owner identity, so a second key imported into this same browser never
+  // sees the first identity's unsent tasks staged for signing under the new key.
+  function draftKey() { return TASK_DRAFT_KEY + "." + (fullDid || "anon"); }
+
+  // Task text is "private to you and your agent" yet sits in cleartext localStorage. Namespacing stops
+  // it LEAKING into another identity's UI; this also stops it ACCUMULATING - drop the legacy
+  // unnamespaced key and any draft not belonging to the current identity.
+  function pruneStaleDrafts() {
+    // Never prune under the anon fallback (fullDid null = a present-but-corrupt owner.json): draftKey()
+    // would be 'flop.taskdraft.anon' and we would delete the real identity's unsent tasks.
+    if (!fullDid) return;
+    try {
+      var keep = draftKey(), drop = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k === TASK_DRAFT_KEY || (k && k.indexOf(TASK_DRAFT_KEY + ".") === 0 && k !== keep)) drop.push(k);
+      }
+      drop.forEach(function (k) { localStorage.removeItem(k); });
+    } catch (e) {}
+  }
 
   function persistDraft() {
-    try { localStorage.setItem(TASK_DRAFT_KEY, JSON.stringify(taskState)); } catch (e) {}
+    try { localStorage.setItem(draftKey(), JSON.stringify(taskState)); } catch (e) {}
   }
   function loadDraft() {
-    try { var v = JSON.parse(localStorage.getItem(TASK_DRAFT_KEY)); return Array.isArray(v) ? v : null; }
-    catch (e) { return null; }
+    try {
+      var v = JSON.parse(localStorage.getItem(draftKey()));
+      if (!Array.isArray(v)) return null;
+      // Validate on load: a hand-edited or oversized draft must not render or get POSTed unchecked.
+      var out = [];
+      for (var i = 0; i < v.length && out.length < taskMax; i++) {
+        var t = v[i];
+        if (!t || typeof t.id !== "string" || typeof t.text !== "string") continue;
+        var sch = (taskSchedules.indexOf(t.schedule) >= 0) ? t.schedule : "once";
+        out.push({ id: t.id.slice(0, 48), text: t.text.slice(0, 240), schedule: sch });
+      }
+      return out;
+    } catch (e) { return null; }
   }
-  function clearDraft() { try { localStorage.removeItem(TASK_DRAFT_KEY); } catch (e) {} }
+  function clearDraft() { try { localStorage.removeItem(draftKey()); } catch (e) {} }
+  window.discardDraft = function () { clearDraft(); loadTasks(); toast("Draft discarded - showing what your agent is running."); };
   function tasksEqual(a, b) {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
     for (var i = 0; i < a.length; i++) {
@@ -1143,6 +1355,7 @@
       var linked = !!d.agent_linked && !!d.has_key;
       document.getElementById("tasks-gate").classList.toggle("hidden", linked);
       document.getElementById("tasks-main").classList.toggle("hidden", !linked);
+      pruneStaleDrafts();  // run even when not linked, so a prior identity's task text does not linger on disk
       if (!linked) return;
       taskPlaybook = d.playbook || [];
       taskMax = d.max_tasks || 8;
@@ -1150,10 +1363,21 @@
       taskSigned = (d.tasks || []).map(function (t) { return { id: t.id, text: t.text, schedule: t.schedule }; });
       taskPublished = (d.published === true || d.published === false) ? d.published : null;
       var draft = loadDraft();
-      taskState = draft ? draft : taskSigned.map(function (t) { return { id: t.id, text: t.text, schedule: t.schedule }; });
+      // An empty array is truthy - it must NOT shadow the live signed playbook (and strand the owner
+      // with "no tasks" while the agent runs the signed ones). Only a non-empty draft overrides.
+      taskState = (draft && draft.length) ? draft : taskSigned.map(function (t) { return { id: t.id, text: t.text, schedule: t.schedule }; });
       document.getElementById("task-max").textContent = String(taskMax);
       var dep = d.deploy || {};
+      // Path A sets TASK_SECRET on the gateway itself, so the server withholds it (secret_managed) and we
+      // show a reassuring note instead of an empty copy box. The manual path still gets the value to copy.
       var secEl = document.getElementById("task-secret"); if (secEl) secEl.value = dep.task_secret || "";
+      var secRow = document.getElementById("task-secret-row");
+      var secManaged = document.getElementById("task-secret-managed");
+      if (secRow && secManaged) {
+        var managed = dep.secret_managed === true;
+        secRow.style.display = managed ? "none" : "";
+        secManaged.style.display = managed ? "" : "none";
+      }
       renderModelChoices(dep.model_choices || [], dep.model);
       renderPlaybook();
       renderTaskList();

@@ -210,5 +210,27 @@ check("tasks_status flags the corrupt secret instead of minting a fresh one",
 check("the corrupt secret file was NOT overwritten with a new one",
       (state2 / "task_secret.txt").read_text("utf-8").strip() == "")
 
+# A Path-A deploy sets TASK_SECRET on the gateway itself, so tasks_status WITHHOLDS the secret
+# (secret_managed:True) for a live deploy bound to THIS agent. The MANUAL path (no such record) still
+# returns it for the owner to copy.
+state3 = Path(_tf.mkdtemp())
+d3 = SRV.Dashboard(str(state3), clock=clk, protocol_client=FakePC())
+d3.ks.generate(PW)
+_, ad3 = D.generate(); d3.link_agent({"agent_did": ad3, "nick": "j3"})
+_sec3 = d3._task_secret()
+_man3 = d3.tasks_status()[1]["deploy"]
+check("MANUAL path returns TASK_SECRET for the owner to copy (secret_managed False)",
+      _man3["task_secret"] == _sec3 and _man3["secret_managed"] is False)
+d3._write_json(d3.deploy_state_path, {"status": "live", "our_did": ad3,
+                                      "model": "@cf/meta/llama-3.1-8b-instruct", "wake": 15})
+_pa3 = d3.tasks_status()[1]["deploy"]
+check("PATH A (live deploy bound to this agent) WITHHOLDS TASK_SECRET (secret_managed True)",
+      _pa3["task_secret"] is None and _pa3["secret_managed"] is True)
+d3._write_json(d3.deploy_state_path, {"status": "live", "our_did": "did:key:zOther",
+                                      "model": "@cf/meta/llama-3.1-8b-instruct", "wake": 15})
+_ot3 = d3.tasks_status()[1]["deploy"]
+check("a live deploy for a DIFFERENT agent does NOT withhold this agent's secret",
+      _ot3["task_secret"] == _sec3 and _ot3["secret_managed"] is False)
+
 sys.stdout.write("----\n" + ("ALL PASS\n" if not FAILS else ("FAILED: %d\n" % len(FAILS))))
 sys.exit(1 if FAILS else 0)

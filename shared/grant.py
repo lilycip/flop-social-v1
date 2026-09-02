@@ -141,6 +141,12 @@ def verify_grant(owner_pub, grant, now=None, revoked_ids=None, expected_agent=No
     owner_did = grant.get("owner_did")
     grant_id = grant.get("grant_id")
     agent_did = grant.get("agent_did")
+    # These come straight from a world-readable / on-disk file. Require the exact types we use them as,
+    # so a crafted non-string (e.g. a list grant_id -> unhashable in the revoked-set test) returns False
+    # rather than raising out of this "never raises" function.
+    if not (isinstance(sig, str) and isinstance(owner_did, str)
+            and isinstance(grant_id, str) and isinstance(agent_did, str)):
+        return False
     if not sig or not owner_did or not grant_id or not agent_did:
         return False
     if agent_did != expected_agent:

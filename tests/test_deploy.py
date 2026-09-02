@@ -91,8 +91,10 @@ our_did = final.get("our_did")
 check("finalize records the agent's did:key", isinstance(our_did, str) and our_did.startswith("did:key:z6Mk"))
 linked = dash.agent_status()[1]
 check("the agent DID was auto-linked in the dashboard", linked.get("agent_did") == our_did)
-cfg = json.loads((dash.config_path).read_text("utf-8"))
-check("the chosen model and wake are recorded for the dashboard knobs", cfg.get("model") == "@cf/meta/llama-3.3-70b-instruct-fp8-fast" and cfg.get("wake") == 15)
+dep_rec = json.loads((dash.deploy_state_path).read_text("utf-8"))
+check("the chosen model and wake are recorded in the deploy record, BOUND to the agent DID",
+      dep_rec.get("model") == "@cf/meta/llama-3.3-70b-instruct-fp8-fast" and dep_rec.get("wake") == 15
+      and dep_rec.get("our_did") == our_did)
 
 seed_call = next((c for c in calls if "KEY_SEED" in c["argv"]), None)
 check("the seed was piped to `secret put KEY_SEED` on stdin", seed_call is not None and seed_call["stdin"])
@@ -156,7 +158,22 @@ check("steps AFTER the failure never ran (secrets pending)", st["secrets"] == "p
 check("steps AFTER the failure never ran (agent pending)", st["agent"] == "pending")
 check("no KEY_SEED secret was pushed after the gateway failed",
       not any("KEY_SEED" in c["argv"] for c in calls3))
-check("deploy.json was not written as live on failure", not eng3.deploy_state_path.exists())
+check("deploy.json is not left 'live' on failure (a partly-failed re-deploy must not read as deployed)",
+      (not eng3.deploy_state_path.exists())
+      or json.loads(eng3.deploy_state_path.read_text("utf-8")).get("status") != "live")
+
+# A deploy that fails at a PURE check (preflight) - before anything on Cloudflare changes - must NOT
+# wipe a prior good 'live' record. The invalidation now sits just before the gateway step.
+dash4 = make_dash()
+M70b = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+dash4._write_json(dash4.deploy_state_path, {"status": "live", "our_did": "did:key:zPrior", "model": M70b, "wake": 15})
+fake4, _c4 = make_fake(fail_on="check_deploy.mjs")
+eng4 = deploy_engine.DeployEngine(dash4, runner=fake4)
+eng4.start({"agent_name": "keep", "model": "@cf/meta/llama-3.1-8b-instruct", "wake": 30})
+check("a deploy that fails at preflight ends 'failed'", wait_done(eng4) == "failed")
+_rec4 = json.loads(dash4.deploy_state_path.read_text("utf-8"))
+check("a preflight failure did NOT wipe the prior live deploy record",
+      _rec4.get("status") == "live" and _rec4.get("model") == M70b)
 
 import subprocess  # noqa: E402
 agent_dir = ROOT / "agent"

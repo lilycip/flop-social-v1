@@ -208,6 +208,11 @@ class DeployEngine:
             return self._fail("identity", _scrub(str(e)) or "could not create the agent identity")
         self._set("identity", "ok", "Your agent's identity is ready.")
 
+        # Invalidate any prior deploy record NOW - the gateway deploy below is the first thing that
+        # changes the gateway's MODEL_NAME, so a failure from here on must not leave a stale 'live'
+        # record naming the OLD model. The pure checks above (account/preflight/identity) change nothing
+        # on Cloudflare, so invalidating before them would wrongly wipe a good record.
+        self.dash._write_json(self.dash.deploy_state_path, {"status": "deploying"})
         self._set("gateway", "running")
         rc, _, err = self.run(
             [self.node, self.wrangler_js, "deploy", "-c", self.gw_cfg,
@@ -247,9 +252,8 @@ class DeployEngine:
         self._set("agent", "ok", "Your agent is deployed.")
 
         self._set("finalize", "running")
-        self._record_config(model, wake)
         code, _ = self.dash.link_agent({"agent_did": our_did, "nick": name})
-        self.dash._write_json(self.deploy_state_path, {"status": "live", "our_did": our_did})
+        self._record_config(model, wake, our_did)
         if code == 200:
             self._set("finalize", "ok", "Linked. Your dashboard is ready.")
         else:
@@ -293,15 +297,10 @@ class DeployEngine:
                                   serialization.NoEncryption()).hex()
         return ks.public_did(), seed
 
-    def _record_config(self, model, wake):
-        with self.dash._config_lock:
-            cfg = {}
-            try:
-                cfg = json.loads(self.dash.config_path.read_text("utf-8"))
-                if not isinstance(cfg, dict):
-                    cfg = {}
-            except Exception:
-                cfg = {}
-            cfg["model"] = model
-            cfg["wake"] = wake
-            self.dash._write_json(self.dash.config_path, cfg)
+    def _record_config(self, model, wake, our_did):
+        # The AUTHORITATIVE deploy record: what a real deploy set, bound to the agent DID it deployed.
+        # The cost panel reads THIS (not the Tasks-tab picker's pre-deploy choice) and only trusts it
+        # when our_did matches the linked agent, so a picker click or a stale record can never
+        # masquerade as what is actually running.
+        self.dash._write_json(self.dash.deploy_state_path,
+                              {"status": "live", "our_did": our_did, "model": model, "wake": wake})

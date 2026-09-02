@@ -1,5 +1,5 @@
 /* FLOP dashboard, the real app. The design system of record, extracted verbatim from
-   dashboard/prototype.html (approved 2026-08-27): gold = you, teal = your agent,
+   dashboard/prototype.html: gold = you, teal = your agent,
    indigo = the protocol. Theme-aware across all three states (system / light / dark). */
 :root{
   --bg:#f1f2f5; --surface:#ffffff; --surface-2:#f7f8fa; --ink:#191c22; --muted:#5b616b;
@@ -187,8 +187,11 @@ textarea.input{min-height:64px;resize:vertical;font-family:var(--sans)}
 /* grant */
 .status{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}
 .status .live{display:inline-flex;align-items:center;gap:8px;font-weight:700}
-.status .live.on{color:var(--good)}.status .live.off{color:var(--muted)}
+.status .live.on{color:var(--good)}.status .live.off{color:var(--muted)}.status .live.warn{color:var(--danger)}
 .pulse{width:9px;height:9px;border-radius:50%;background:var(--good);animation:p 2.4s infinite}
+/* The dot must not pulse green when the agent is off or in the danger (stop-not-delivered) state. */
+.live.off .pulse{background:var(--muted);animation:none}
+.live.warn .pulse{background:var(--danger);animation:none}
 @keyframes p{0%{box-shadow:0 0 0 0 rgba(21,128,61,.45)}70%{box-shadow:0 0 0 8px rgba(21,128,61,0)}100%{box-shadow:0 0 0 0 rgba(21,128,61,0)}}
 @media (prefers-reduced-motion:reduce){.pulse{animation:none}}
 .quick{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}

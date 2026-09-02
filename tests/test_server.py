@@ -225,6 +225,7 @@ class _FakePC:
     def __init__(self):
         self.notes = {}
         self.note_reads = {}
+        self.read_error_keys = set()  # (ns,key) whose read simulates a transport failure ('error')
 
     def set_note(self, ns, key, value, confirm=False):
         self.notes[(ns, key)] = value
@@ -232,6 +233,13 @@ class _FakePC:
 
     def get_note(self, ns, key):
         return self.note_reads.get((ns, key))
+
+    def get_note_state(self, ns, key):
+        if (ns, key) in self.read_error_keys:
+            return "error", None
+        if (ns, key) in self.note_reads:
+            return "value", self.note_reads[(ns, key)]
+        return "absent", None
 
 
 dash.pc = _FakePC()
@@ -259,8 +267,12 @@ s, j = req("POST", "/api/cost/save", origin=ORIGIN, body={"model": "@cf/x/y", "w
 check("a wrong passphrase is refused (403) and burns no nonce", s == 403)
 env3 = json.loads(dash.pc.notes[(cns, ckey)])
 check("the refused saves did not overwrite the last good signed config", env3["nonce"] == env2["nonce"])
+# 'signed' now means the owner-signed config is ON THE SLOT and verifies (not just a local file), so
+# mirror the landed write into the read-back fixture the way a real publish would leave it on the slot.
+dash.pc.note_reads[(cns, ckey)] = dash.pc.notes[(cns, ckey)]
 s, j = req("GET", "/api/cost")
-check("cost status returns the current setting, choices and health", j.get("wake") == 30 and "wake_choices" in j and "health" in j)
+check("cost status returns the current signed setting, choices and health",
+      j.get("wake") == 30 and j.get("source") == "signed" and "wake_choices" in j and "health" in j)
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 
@@ -301,20 +313,80 @@ check("a slightly-future ts (clock skew) reads working, not a false stale", dash
 dash.pc.note_reads[(hns, hkey)] = health_env(akey, "OK", NOW + 4000)
 check("a far-future ts reads as stale, never working", dash._model_health()["status"] == "stale")
 
+# --- The private activity feed: gateway-signed ring, dashboard verifies under the AGENT did ---
+check("the activity slot derives identically to the gateway (cross-language parity)",
+      dash._activity_slot_key("test-activity-secret") == "ae2263dd04a3f40054d13b7da39352fb01a762152")
+_secret_a = dash._task_secret()
+ans = diddle.did_note_ns(adid)
+aslot = dash._activity_slot_key(_secret_a)
+
+
+def activity_env(signer, ring, nonce=1):
+    payload = json.dumps(ring, separators=(",", ":"))
+    sig = diddle.sign_b64url(signer, _P.note_sig_input(ans, aslot, _canon(nonce, "nonce"), payload))
+    return json.dumps({"payload": payload, "nonce": nonce, "sig": sig})
+
+
+dash.pc.note_reads[(ans, aslot)] = activity_env(
+    akey, [{"t": 100, "d": "said hi in general"}, {"t": 200, "d": "delivered result for job j1"}])
+s, j = req("GET", "/api/activity")
+check("the activity feed reads a ring the AGENT signed, in order",
+      s == 200 and [it["d"] for it in j.get("items", [])] == ["said hi in general", "delivered result for job j1"])
+_spoof_a = Ed25519PrivateKey.generate()
+dash.pc.note_reads[(ans, aslot)] = activity_env(_spoof_a, [{"t": 1, "d": "forged what-it-did line"}])
+s, j = req("GET", "/api/activity")
+check("a ring signed by a NON-agent key is ignored (no forged 'what it did')",
+      j.get("items") == [] and "error" in j)
+
 import os as _os  # noqa: E402
-dash._write_json(dash.config_path, {"model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "wake": 5})
+M70 = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+# Clear the signed-config slot the earlier block left on the read-back fixture, so this tests the
+# genuine no-signed-config path (otherwise the live slot, not the deploy record, would win).
+dash.pc.note_reads.pop((cns, ckey), None)
+# A REAL deploy record, bound to the linked agent (adid): the panel may trust it as 'deployed'.
+dash._write_json(dash.deploy_state_path, {"status": "live", "our_did": adid, "model": M70, "wake": 5})
 try:
     _os.remove(dash.cost_config_path)
 except OSError:
     pass
+dash.pc.note_reads[(hns, hkey)] = health_env(akey, "OK", NOW)  # a fresh live report
 s, j = req("GET", "/api/cost")
-check("no signed config -> cost panel seeds model+wake from the DEPLOYED values (not the default), source=deployed",
-      j.get("model") == "@cf/meta/llama-3.3-70b-instruct-fp8-fast" and j.get("wake") == 5 and j.get("source") == "deployed")
+check("no signed config -> cost panel reads model+wake from the DEPLOY RECORD (not the default), source=deployed",
+      j.get("model") == M70 and j.get("wake") == 5 and j.get("source") == "deployed")
+check("running_model comes from a LIVE (ok) health report", j.get("running_model") == M70)
 check("_current_wake falls back to the deployed wake for the health freshness window", dash._current_wake() == 5)
-dash._write_json(dash.config_path, {})
+# A STALE report must not name a running model (could be hours old, or a replay of an old envelope).
+dash.pc.note_reads[(hns, hkey)] = health_env(akey, "OK", NOW + 4000)
 s, j = req("GET", "/api/cost")
-check("no signed config and no deploy record -> the coded default, source=default",
-      j.get("model") == server.DEFAULT_MODEL and j.get("source") == "default")
+check("a stale health report yields running_model=None (never a confidently-wrong model)", j.get("running_model") is None)
+# A deploy record bound to a DIFFERENT agent must NOT masquerade as this agent's deployed model.
+dash._write_json(dash.deploy_state_path, {"status": "live", "our_did": "did:key:zSomeOther", "model": M70, "wake": 5})
+s, j = req("GET", "/api/cost")
+check("a deploy record for a DIFFERENT agent is not trusted -> source unknown, no asserted model",
+      j.get("source") == "unknown" and j.get("model") is None)
+# No deploy record, agent still linked: we cannot claim a model -> unknown, never default-as-live.
+try:
+    _os.remove(dash.deploy_state_path)
+except OSError:
+    pass
+s, j = req("GET", "/api/cost")
+check("a linked agent with no deploy record -> source unknown (never a default shown as running)",
+      j.get("source") == "unknown")
+# Only with NO agent linked does the coded default show as a starting choice.
+dash.unlink_agent()
+s, j = req("GET", "/api/cost")
+check("no agent linked at all -> the coded default is offered, source=default",
+      j.get("source") == "default" and j.get("model") == server.DEFAULT_MODEL)
+
+# A FLAKY config-slot read (transport error, NOT a genuine 'absent') must not let the panel assert the
+# deployed model, and must tighten the freshness window to the shortest wake.
+dash.pc.read_error_keys.add((cns, ckey))
+s, j = req("GET", "/api/cost")
+check("a flaky config-slot read -> source unknown, no asserted model (never the deployed model)",
+      j.get("source") == "unknown" and j.get("model") is None)
+check("a flaky config-slot read tightens the freshness wake to the minimum",
+      dash._current_wake() == min(dash.WAKE_CHOICES))
+dash.pc.read_error_keys.discard((cns, ckey))
 
 httpd.shutdown()
 sys.stdout.write("----\n")
