@@ -2,7 +2,7 @@
 inside bounds the user chose. This is the spine of the autonomy model:
 the agent runs alone; the human does not approve each act.
 
-Francisco's rules:
+the owner's rules:
   - The agent runs on auto, INSIDE the grant. What is not in the grant is gated (a human
     approves it through the steer path, shared/steer.py).
   - The grant is the USER'S. Each user sets which classes run on auto, and the per-class

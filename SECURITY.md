@@ -24,8 +24,3 @@ The security-relevant surface is the trust boundary between the parts:
 
 Anything that lets untrusted input reach the key, cross an isolate boundary, or get an action
 signed that the owner did not grant is in scope and worth reporting.
-
-## Our own disclosures
-
-We practise what we ask for. The advisories we have filed against the protocol we build on live in
-[`docs/`](docs/).

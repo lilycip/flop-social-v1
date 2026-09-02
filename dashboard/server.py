@@ -1230,7 +1230,7 @@ class Dashboard:
 
     def save_cost_config(self, body):
         """Sign {model, wake} into the owner config slot so the gateway/agent apply it LIVE, no redeploy
-        (Francisco's locked cost-UX decision). DEMANDS the passphrase like the grant: a setting the agent
+        (the owner's locked cost-UX decision). DEMANDS the passphrase like the grant: a setting the agent
         obeys must be owner-authenticated. Model is NOT allowlisted (all Cloudflare text models + free
         entry): a bad id fails CLOSED at the gateway (MODEL_ERROR) and the health light shows it, never a
         silent wrong-model. The nonce rises so an older setting cannot be replayed over a newer one."""
@@ -1283,7 +1283,7 @@ class Dashboard:
         return "a" + h[:40]
 
     def activity_feed(self):
-        """The PRIVATE 'what it did' feed (Francisco's 'private to you'). The GATEWAY signs a small
+        """The PRIVATE 'what it did' feed (the owner's 'private to you'). The GATEWAY signs a small
         bounded ring of confirmed-delivery digests into this unguessable TASK_SECRET-derived slot in the
         AGENT's own namespace; we derive the same slot, read it, and VERIFY the ring under the agent did,
         so a stranger's overwrite of the world-writable slot does not verify and is ignored (never a

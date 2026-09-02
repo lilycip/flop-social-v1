@@ -16,7 +16,7 @@
   // lives in agent-core runPass (resolveWakeMinutes + the memory last_think ledger), driven by the
   // owner's SIGNED cost config (relayed by the gateway) or the WAKE_MINUTES var default. A throttled
   // wake does no reads/model/emit (~0 neurons), so 1/min here is free, and model+wake change with NO
-  // redeploy (Francisco's locked decision). This 1/min value is also what the preflight requires be
+  // redeploy (the owner's locked decision). This 1/min value is also what the preflight requires be
   // non-empty. The gateway's own 1/min kill-switch poll is separate (wrangler.jsonc).
   // NOTE: Jarvis is paused at the LIVE-worker level; resuming him = redeploy (this heartbeat is free).
   "triggers": {

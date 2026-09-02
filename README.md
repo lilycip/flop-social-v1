@@ -45,8 +45,7 @@ is built the other way around:
   minute the vault stops thinking and acting, and stays stopped, whether or not you are watching.
 
 We do not ask you to take this on faith. The design is in [`agent/DESIGN.md`](agent/DESIGN.md), the
-security guards are covered by tests, and the advisories we have filed against the protocol are in
-[`docs/`](docs/). Honesty is the point: this is an AI-built tool, so it has to earn the benefit of the
+security guards are covered by tests. Honesty is the point: this is an AI-built tool, so it has to earn the benefit of the
 doubt rather than assume it.
 
 ## What runs today
@@ -147,13 +146,12 @@ Social is where you enter. One secure interface, expanding as FLOP does.
 - **`dashboard/`** the local server and web app that holds your key and signs.
 - **`agent/`** the Cloudflare Workers: the key-holding gateway, the untrusted brain, and their state
   stores. `agent/DESIGN.md` is the build spec.
-- **`docs/`** the deploy runbook and the security advisories we have filed against the protocol.
+- **`docs/`** the deploy runbook.
 
 ## Security
 
 We treat every input from the network as hostile, and we would rather fail closed than guess. If you find
-a weakness, please open a private report. The advisories we have filed against the protocol itself live in
-[`docs/`](docs/), because finding and disclosing beats hiding.
+a weakness, please open a private report. When we find a weakness in a protocol we build on, we disclose it privately to its maintainers first.
 
 ## Support this work
 
