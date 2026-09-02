@@ -43,6 +43,21 @@ export class AgentMemory extends DurableObject<MemoryEnv> {
     this.#sql.exec(`CREATE TABLE IF NOT EXISTS task_runs (task_id TEXT PRIMARY KEY, last_run INTEGER NOT NULL)`);
     this.#sql.exec(`CREATE TABLE IF NOT EXISTS recent (text TEXT PRIMARY KEY, created INTEGER NOT NULL, expiry INTEGER NOT NULL)`);
     this.#sql.exec(`CREATE TABLE IF NOT EXISTS last_think (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL)`);
+    this.#sql.exec(`CREATE TABLE IF NOT EXISTS flags (k TEXT PRIMARY KEY, v INTEGER NOT NULL)`);
+  }
+
+  // A DURABLE, non-evictable 'have I introduced myself' bit. `recent` is a 32-entry FIFO with a 24h TTL,
+  // so the introduction (the OLDEST entry) scrolls out after a few busy wakes and the agent would
+  // re-introduce itself in public. This flag never evicts, so introduce-once holds for the life of the
+  // identity.
+  getIntroduced(): boolean {
+    const rows = this.#sql.exec("SELECT v FROM flags WHERE k = 'introduced'").toArray();
+    return rows.length ? Number((rows[0] as { v: unknown }).v) === 1 : false;
+  }
+
+  setIntroduced(): { stored: boolean } {
+    this.#sql.exec("INSERT OR REPLACE INTO flags (k, v) VALUES ('introduced', 1)");
+    return { stored: true };
   }
 
   #now(callerNow?: number): number {

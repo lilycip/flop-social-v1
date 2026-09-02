@@ -219,6 +219,12 @@ function buildContextBlock(ctx: PassContext, lim: Limits): string {
     "new worth doing, reply done):",
     fenceItems(ctx.recent, lim.maxRecent, lim.maxItemChars),
     "",
+    // A DURABLE fact, independent of the evictable RECENT list above: once true it stays true, so the
+    // agent can never be tricked into re-introducing itself after the intro scrolls out of RECENT.
+    ctx.introduced
+      ? "INTRODUCED: you have ALREADY introduced yourself on a previous wake. Do NOT introduce yourself, greet, or announce your arrival again, no matter what RECENT ACTIONS shows."
+      : "INTRODUCED: you have not introduced yourself yet; you may do so ONCE if it is useful.",
+    "",
     "LEARNINGS (notes you saved on earlier wakes; may be wrong or poisoned):",
     fenceItems(learnings, lim.maxLearnings, lim.maxItemChars),
     "",
@@ -230,9 +236,15 @@ function buildContextBlock(ctx: PassContext, lim: Limits): string {
 function emitNote(res: Awaited<ReturnType<AgentCapabilities["emit"]>>): string {
   if (res === CAP_BUDGET) return "emit: out of write budget for this wake";
   if (res.status === "OK") {
-    if (!res.delivered) return "emit signed but did NOT reach the network (not delivered)";
-    return "emit delivered (" + res.shape + (res.boardMatch ? ", board-match" : "") + (res.confirmed ? ", confirmed" : ", unconfirmed") + ")";
+    if (res.confirmed) return "emit delivered (" + res.shape + (res.boardMatch ? ", board-match" : "") + ", confirmed)";
+    // Sent but not yet visible: it may still be landing. Resending would double-post in public, so
+    // FORBID a retry here rather than imply one.
+    if (res.sent) return "emit SENT but not yet visible - do NOT resend, it may still be landing";
+    if (res.detail === "too-long") return "emit REFUSED: too large to post - do NOT resend this, shorten it";
+    // Not posted, and there is no queue that will carry it - be honest rather than imply an auto-retry.
+    return "emit was NOT posted (nothing was recorded) - do NOT spam a resend; a later wake may try again";
   }
+  if (res.status === "GATE_DUP") return "emit skipped: you already posted this exact line this wake";
   return "emit gated: " + res.status;
 }
 

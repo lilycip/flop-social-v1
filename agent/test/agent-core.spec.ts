@@ -141,6 +141,8 @@ function makeDeps(over: Partial<PassDeps> & { budget: PassDeps["budget"]; planne
       },
       getLastThink: async () => 0, // 0 => never throttled, so every test exercises a full think pass
       setLastThink: async (_n: number) => ({ stored: true }),
+      getIntroduced: async () => false,
+      setIntroduced: async () => ({ stored: true }),
     },
     ...over,
   };
@@ -259,8 +261,12 @@ describe("emit - the brain cannot supply a nonce; the wall stamps a strictly-inc
     expect((last as { status: string; delivered?: boolean }).delivered).toBe(false);
   });
 
-  it("a SENT-but-UNCONFIRMED emit (200, no read-back) is NOT recorded and reports delivered:false", async () => {
+  it("a SENT-but-UNCONFIRMED emit IS recorded (tagged) so it is never re-posted, and reports delivered:false + sent:true", async () => {
+    // `recent` is the only re-post suppressor, so it must record on SENT, not
+    // confirmed - else a lagging read-back re-introduces us in public every wake. Delivery honesty
+    // rides in the tagged digest and the return, not in whether we record.
     let last: unknown;
+    let recentText = "";
     const planner: Planner = {
       async plan(_c, caps) {
         last = await caps.emit({ shape: "kibble", verb: "CLAIM", target: { job_id: "job-1" } });
@@ -270,12 +276,70 @@ describe("emit - the brain cannot supply a nonce; the wall stamps a strictly-inc
     deps.gateway.sign = async () => ({
       status: "OK", shape: "kibble", did: "did:key:z", signature: "s", nonce: "1", room: "kibble", text: "CLAIM job-1", boardMatch: false,
     });
+    deps.memory.recordRecent = async (t: string) => { counts.recordRecent++; recentText = t; return { stored: true }; };
     deps.sendSigned = async () => { counts.send++; return { sent: true, confirmed: false }; };
     await runPass(deps);
     expect(counts.send).toBe(1);
-    expect(counts.recordActed).toBe(0);
-    expect(counts.recordRecent).toBe(0);
+    expect(counts.recordActed).toBe(1);
+    expect(counts.recordRecent).toBe(1);
+    expect(recentText).toContain("(sent, not yet confirmed)");
     expect((last as { delivered?: boolean }).delivered).toBe(false);
+    expect((last as { sent?: boolean }).sent).toBe(true);
+  });
+
+  it("refuses an exact same-wake duplicate emit (mechanical dedup) - only ONE reaches the wire", async () => {
+    const results: unknown[] = [];
+    const planner: Planner = {
+      async plan(_c, caps) {
+        results.push(await caps.emit({ shape: "say", room: "r", text: "hello twice" }));
+        results.push(await caps.emit({ shape: "say", room: "r", text: "hello twice" }));
+      },
+    };
+    const { deps, counts } = makeDeps({ budget: { writes: 4 }, planner });
+    deps.gateway.sign = async () => ({ status: "OK", shape: "say", did: "did:key:z", signature: "s", nonce: "1", room: "r", text: "hello twice" });
+    await runPass(deps);
+    expect(counts.send).toBe(1);
+    expect((results[1] as { status?: string }).status).toBe("GATE_DUP");
+  });
+
+  it("the first successful SAY sets the durable introduced flag (survives ring eviction)", async () => {
+    let introduced = false;
+    const planner: Planner = {
+      async plan(_c, caps) {
+        await caps.emit({ shape: "say", room: "r", text: "hi all" });
+      },
+    };
+    const { deps } = makeDeps({ budget: { writes: 4 }, planner });
+    deps.gateway.sign = async () => ({ status: "OK", shape: "say", did: "did:key:z", signature: "s", nonce: "1", room: "r", text: "hi all" });
+    deps.memory.setIntroduced = async () => { introduced = true; return { stored: true }; };
+    await runPass(deps);
+    expect(introduced).toBe(true);
+  });
+
+  it("the private activity feed (noteActivity) fires ONLY on a CONFIRMED emit, never sent-unconfirmed", async () => {
+    let confirmed = true;
+    const acts: string[] = [];
+    const planner: Planner = {
+      async plan(_c, caps) {
+        await caps.emit({ shape: "say", room: "r", text: "hello there" });
+      },
+    };
+    const { deps } = makeDeps({ budget: { writes: 4 }, planner });
+    deps.gateway.sign = async () => ({
+      status: "OK", shape: "say", did: "did:key:z", signature: "s", nonce: "1", room: "r", text: "hello there",
+    });
+    deps.gateway.noteActivity = async (d: string) => { acts.push(d); return { stored: true }; };
+    deps.sendSigned = async () => ({ sent: true, confirmed });
+    await runPass(deps);
+    expect(acts.length).toBe(1);              // confirmed -> one activity line
+    confirmed = false;
+    const { deps: deps2 } = makeDeps({ budget: { writes: 4 }, planner });
+    deps2.gateway.sign = deps.gateway.sign;
+    const acts2: string[] = [];
+    deps2.gateway.noteActivity = async (d: string) => { acts2.push(d); return { stored: true }; };
+    deps2.sendSigned = async () => ({ sent: true, confirmed: false });
+    await runPass(deps2);
+    expect(acts2.length).toBe(0);             // sent-but-unconfirmed -> nothing in the feed
   });
 
   it("a signed emit that is gated by the Governor never reaches the wire", async () => {
@@ -308,7 +372,9 @@ describe("runPass - the facade caps a hostile planner", () => {
           else researchSeen++;
           if ((await caps.runCode({ code: "c" })) === CAP_BUDGET) budgetHits++;
           else sandboxSeen++;
-          if ((await caps.emit({ shape: "say", room: "r", text: "t" })) === CAP_BUDGET) budgetHits++;
+          // DISTINCT text per push so the same-wake dedup does not collapse them - this test measures the
+          // WRITE BUDGET cap, not dedup (which has its own test).
+          if ((await caps.emit({ shape: "say", room: "r", text: "t" + i })) === CAP_BUDGET) budgetHits++;
           else emitSeen++;
         }
       },
@@ -628,16 +694,22 @@ describe("the four memory protocols (4c-2)", () => {
     expect((result as { status: string }).status).toBe("OK");
   });
 
-  it("a secret-SHAPED recent DIGEST is not persisted into re-read memory (M6 on the recent write path)", async () => {
+  it("a kibble digest with a hex job_id IS recorded (a PUBLIC job id is not a secret; RESULT/ATTEST need a re-post suppressor)", async () => {
+    // The secret-scan must apply only to the SAY digest (model-authored free text).
+    // A kibble digest is a verb plus a public job id; scanning it dropped the record on a hex-shaped id
+    // and left a RESULT/ATTEST with no re-post suppression at all.
     const shaId = "a1b2c3d4".repeat(5);
+    let recentText = "";
     const planner: Planner = {
       async plan(_c, caps) {
         await caps.emit({ shape: "kibble", verb: "RESULT", target: { job_id: shaId, result: "the answer is 42" } });
       },
     };
     const { deps, counts } = makeDeps({ budget: { writes: 4 }, planner });
+    deps.memory.recordRecent = async (t: string) => { recentText = t; counts.recordRecent++; return { stored: true }; };
     await runPass(deps);
     expect(counts.send).toBe(1);
-    expect(counts.recordRecent).toBe(0);
+    expect(counts.recordRecent).toBe(1);
+    expect(recentText).toContain(shaId);
   });
 });

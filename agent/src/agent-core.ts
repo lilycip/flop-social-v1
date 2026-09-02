@@ -104,6 +104,9 @@ export interface GatewayClient {
   complete(prompt: string): Promise<ModelResult>;
   tasks(): Promise<OwnerTask[]>;
   config(): Promise<{ model: string; wake: number } | null>;
+  // Optional: the private "what it did" feed. Harness-driven only (never exposed as a brain capability),
+  // so a hijacked brain cannot reach it to spam. Optional so existing gateway mocks still typecheck.
+  noteActivity?(digest: string): Promise<{ stored: boolean }>;
 }
 
 export interface ResearchFetcher {
@@ -148,6 +151,8 @@ export interface MemoryClient {
   recordTaskRun(taskId: string): Promise<{ stored: boolean }>;
   getLastThink(): Promise<number>;
   setLastThink(nowMs: number): Promise<{ stored: boolean }>;
+  getIntroduced(): Promise<boolean>;
+  setIntroduced(): Promise<{ stored: boolean }>;
 }
 
 export interface SendOutcome {
@@ -157,7 +162,9 @@ export interface SendOutcome {
 }
 
 export type SignOk = Extract<SignResult, { status: "OK" }>;
-export type EmitResult = (SignOk & { delivered: boolean; confirmed: boolean }) | Exclude<SignResult, { status: "OK" }>;
+export type EmitResult =
+  | (SignOk & { delivered: boolean; confirmed: boolean; sent: boolean; detail?: string })
+  | Exclude<SignResult, { status: "OK" }>;
 
 export interface PassDeps {
   budget: Partial<TickBudget> | null | undefined;
@@ -216,6 +223,7 @@ export interface PassContext {
   handoff: string | null;
   recent: string[];
   tasks: OwnerTask[];
+  introduced: boolean;
 }
 
 const SECRET_SHAPE = /[A-Fa-f0-9]{40,}|[A-Za-z0-9_-]{60,}/;
@@ -225,7 +233,9 @@ function looksLikeSecret(text: unknown): boolean {
 
 function recentDigest(req: PlannerSignRequest): string | null {
   if (req.shape === "say") {
-    const text = typeof req.text === "string" ? req.text.slice(0, 120) : "";
+    // Clamp on CODE POINTS so a trailing emoji is never split into a lone surrogate that downstream
+    // signing/encoding would choke on.
+    const text = typeof req.text === "string" ? [...req.text].slice(0, 120).join("") : "";
     return "said in " + req.room + ": " + text;
   }
   if (req.shape === "kibble") {
@@ -250,6 +260,10 @@ export function makeNonceAllocator(clock?: () => number): () => number {
 }
 
 function buildCapabilities(budget: BudgetTracker, deps: PassDeps, allocNonce: () => number): AgentCapabilities {
+  // A mechanical, harness-side same-wake dedup: `recent` is read once at the top of the pass and is
+  // invisible to changes made mid-pass, so it cannot stop a hijacked planner re-posting the SAME line
+  // several times in one wake. This set does, before any write budget is spent.
+  const emittedThisTick = new Set<string>();
   return {
     async model(prompt: string): Promise<Budgeted<ModelResult>> {
       if (!budget.spend("modelCalls")) return CAP_BUDGET;
@@ -268,6 +282,10 @@ function buildCapabilities(budget: BudgetTracker, deps: PassDeps, allocNonce: ()
       return deps.sandbox.run(spec);
     },
     async emit(req: PlannerSignRequest): Promise<Budgeted<EmitResult>> {
+      // Refuse an exact same-wake duplicate BEFORE spending the write, so a repeat costs nothing and
+      // never reaches the public board a second time.
+      const dupKey = recentDigest(req);
+      if (dupKey && emittedThisTick.has(dupKey)) return { status: "GATE_DUP" };
       if (!budget.spend("writes")) return CAP_BUDGET;
       if (req.shape === "say" && looksLikeSecret(req.text)) return { status: "GATE_FORBIDDEN" };
       const full = { ...req, nonce: allocNonce() } as SignRequest;
@@ -281,29 +299,57 @@ function buildCapabilities(budget: BudgetTracker, deps: PassDeps, allocNonce: ()
         out = { sent: false, confirmed: false };
       }
 
-      if (out.confirmed && req.shape === "kibble") {
-        const target = req.target !== null && typeof req.target === "object" ? (req.target as Record<string, unknown>) : {};
-        const jobId = typeof target["job_id"] === "string" ? (target["job_id"] as string) : "";
-        if (jobId) {
+      // Record on SENT, not confirmed. `recent` is the ONLY re-post / introduce-once suppressor, and a
+      // signed, budget-charged, wire-accepted emit is an ACTION TAKEN whether or not the host echoes it
+      // back yet. Gating it on a read-back the host can lag would re-introduce us in public every wake.
+      // Delivery honesty rides in the digest text and the planner note, never in whether we record.
+      if (out.sent) {
+        if (req.shape === "kibble") {
+          const target = req.target !== null && typeof req.target === "object" ? (req.target as Record<string, unknown>) : {};
+          const jobId = typeof target["job_id"] === "string" ? (target["job_id"] as string) : "";
+          if (jobId) {
+            try {
+              await deps.memory.recordActed(jobId, req.verb);
+            } catch {
+              /* memory is best-effort; the emit already landed */
+            }
+          }
+        }
+        // Mark this line emitted so an exact repeat later in the SAME wake is refused above.
+        if (dupKey) emittedThisTick.add(dupKey);
+        // The first successful SAY means we have spoken publicly - set the durable introduced flag so
+        // introduce-once survives ring eviction and the 24h recent-TTL.
+        if (req.shape === "say") {
           try {
-            await deps.memory.recordActed(jobId, req.verb);
+            await deps.memory.setIntroduced();
+          } catch {
+            /* best-effort */
+          }
+        }
+        // Only the SAY digest carries model-authored free text worth secret-scanning; a kibble digest is
+        // just a verb plus a PUBLIC job id, and scanning it would drop the record on a hex-shaped id and
+        // leave a RESULT/ATTEST with no re-post suppressor at all.
+        if (dupKey && (req.shape !== "say" || !looksLikeSecret(dupKey))) {
+          const line = out.confirmed ? dupKey : dupKey + " (sent, not yet confirmed)";
+          try {
+            await deps.memory.recordRecent(line);
           } catch {
             /* memory is best-effort; the emit already landed */
           }
         }
       }
 
-      if (out.confirmed) {
-        const digest = recentDigest(req);
-        if (digest && !looksLikeSecret(digest)) {
-          try {
-            await deps.memory.recordRecent(digest);
-          } catch {
-            /* memory is best-effort; the emit already landed */
-          }
+      // The private "what it did" feed records only CONFIRMED deliveries (display-only; a missed line
+      // loses nothing that matters). This is a harness side effect of a confirmed emit - never a brain
+      // capability - so a hijacked planner cannot call it to spam the feed or burn protocol writes.
+      if (out.confirmed && deps.gateway.noteActivity && dupKey && (req.shape !== "say" || !looksLikeSecret(dupKey))) {
+        try {
+          await deps.gateway.noteActivity(dupKey);
+        } catch {
+          /* best-effort; the emit already landed */
         }
       }
-      return { ...result, delivered: out.confirmed, confirmed: out.confirmed };
+      return { ...result, delivered: out.confirmed, confirmed: out.confirmed, sent: out.sent, detail: out.detail };
     },
     async remember(text: string): Promise<Budgeted<{ stored: boolean }>> {
       if (!budget.spend("memory")) return CAP_BUDGET;
@@ -440,6 +486,13 @@ export async function runPass(deps: PassDeps): Promise<PassReport> {
     recent = [];
   }
 
+  let introduced = false;
+  try {
+    introduced = await deps.memory.getIntroduced();
+  } catch {
+    introduced = false;
+  }
+
   let tasks: OwnerTask[] = [];
   try {
     const t = await deps.gateway.tasks();
@@ -462,7 +515,7 @@ export async function runPass(deps: PassDeps): Promise<PassReport> {
   const caps = buildCapabilities(budget, deps, allocNonce);
   let plannerOk = true;
   try {
-    await deps.planner.plan({ nick: deps.nick, board, mailbox, rooms, freshJobIds, learnings, handoff, recent, tasks: due }, caps);
+    await deps.planner.plan({ nick: deps.nick, board, mailbox, rooms, freshJobIds, learnings, handoff, recent, tasks: due, introduced }, caps);
   } catch {
     plannerOk = false;
   }

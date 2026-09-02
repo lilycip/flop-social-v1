@@ -221,6 +221,18 @@ export class Governor extends DurableObject<GovernorEnv> {
     return { grant };
   }
 
+  async hasLiveGrant(now: number): Promise<boolean> {
+    // A read-only liveness check that consumes NO counter: is there a verified, unexpired, un-revoked
+    // grant whose allowlist is non-empty (i.e. NOT a STOP)? Used to keep unmetered signing surfaces
+    // dark under the kill switch.
+    if (typeof now !== "number" || !this.#validNow(now)) return false;
+    const t = this.#nowSec(now);
+    const loaded = await this.#loadVerifiedActiveGrant(t);
+    if ("gate" in loaded) return false;
+    const allow = (loaded.grant as { allow?: unknown }).allow;
+    return allow != null && typeof allow === "object" && Object.keys(allow as object).length > 0;
+  }
+
   async reserveModel(now: number): Promise<AuthorizeResult> {
     if (typeof now !== "number") return { status: Status.ERROR_BAD_REQUEST };
     if (!this.#validNow(now)) return { status: Status.GATE_CLOCK };

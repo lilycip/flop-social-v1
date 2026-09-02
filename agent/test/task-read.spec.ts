@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readOwnerTasks } from "../src/index";
+import { readOwnerTasks, activitySlotKey, readOwnActivityRing, fitActivityRing, MAX_ACTIVITY_ENTRIES } from "../src/index";
 import { importSigningKey, signB64url, didNoteNs } from "../src/shared/did";
 import { noteSigInput } from "../src/shared/protocol";
 import { sha256Hex, hexToBytes } from "../src/shared/bytes";
@@ -95,5 +95,74 @@ describe("readOwnerTasks - the private, owner-authenticated task channel", () =>
     const vec = pyVec as { owner_did: string; secret: string; note_value: string; expected: Array<{ id: string; text: string; schedule: string }> };
     const out = await readOwnerTasks(fetchNote(noteBody(vec.note_value)), vec.owner_did, vec.secret);
     expect(out).toEqual(vec.expected);
+  });
+});
+
+describe("the private activity feed - gateway-signed ring in an unguessable slot", () => {
+  it("derives the activity slot IDENTICALLY to the Python dashboard (cross-language parity)", async () => {
+    // The Python _activity_slot_key computes the same 'a' + sha256('flop-activity-slot|'+secret)[:40].
+    expect(await activitySlotKey("test-activity-secret")).toBe("ae2263dd04a3f40054d13b7da39352fb01a762152");
+  });
+
+  async function signedRing(entries: unknown, seed = SEED, ownerDid = OWNER, nonce = 1): Promise<string> {
+    const ns = await didNoteNs(ownerDid);
+    const key = await activitySlotKey("s");
+    const payload = JSON.stringify(entries);
+    const sig = await signB64url(await importSigningKey(seed), noteSigInput(ns, key, canonInt(nonce, "nonce"), payload));
+    return noteBody(JSON.stringify({ payload, nonce, sig }));
+  }
+
+  it("reads back a ring WE signed and bounds it to the last MAX_ACTIVITY_ENTRIES", async () => {
+    const ns = await didNoteNs(OWNER);
+    const key = await activitySlotKey("s");
+    const entries = Array.from({ length: MAX_ACTIVITY_ENTRIES + 3 }, (_v, i) => ({ t: 1000 + i, d: "said hi " + i }));
+    const out = await readOwnActivityRing(fetchNote(await signedRing(entries)), ns, key, OWNER);
+    expect(out.length).toBe(MAX_ACTIVITY_ENTRIES);
+    expect(out[out.length - 1]!.d).toBe("said hi " + (MAX_ACTIVITY_ENTRIES + 2)); // newest kept
+  });
+
+  it("drops a non-string digest entry, keeps the valid ones", async () => {
+    const ns = await didNoteNs(OWNER);
+    const key = await activitySlotKey("s");
+    const ring = [{ t: 1, d: "ok one" }, { t: 2, d: 123 }, { t: 3, d: "ok two" }];
+    const out = await readOwnActivityRing(fetchNote(await signedRing(ring)), ns, key, OWNER);
+    expect(out.map((e) => e.d)).toEqual(["ok one", "ok two"]);
+  });
+
+  it("REJECTS a ring signed by a STRANGER (never re-signs foreign lines as ours) -> []", async () => {
+    const ns = await didNoteNs(OWNER);
+    const key = await activitySlotKey("s");
+    const strangerSeed = hexToBytes("11".repeat(32));
+    const body = await signedRing([{ t: 1, d: "evil line" }], strangerSeed);
+    expect(await readOwnActivityRing(fetchNote(body), ns, key, OWNER)).toEqual([]);
+  });
+
+  it("an empty / missing slot and junk both degrade to [] (never a throw)", async () => {
+    const ns = await didNoteNs(OWNER);
+    const key = await activitySlotKey("s");
+    expect(await readOwnActivityRing(fetchNote("404 no note", 404), ns, key, OWNER)).toEqual([]);
+    expect(await readOwnActivityRing(fetchNote(noteBody("not json {{{")), ns, key, OWNER)).toEqual([]);
+  });
+
+  it("fitActivityRing trims by ENCODED URL length so a non-Latin (CJK) feed never deadlocks", async () => {
+    const ns = await didNoteNs(OWNER);
+    const key = await activitySlotKey("s");
+    const cjk = "测".repeat(120); // 120 CJK code points, ~9 URL chars each -> a ring of 12 blows the cap
+    let ring: Array<{ t: number; d: string }> = [];
+    for (let i = 0; i < MAX_ACTIVITY_ENTRIES + 6; i++) {
+      ring = fitActivityRing(ring, { t: 1000 + i, d: cjk }, ns, key, 1_700_000_000 + i);
+      expect(ring.length).toBeGreaterThanOrEqual(1); // never refuses forever
+      expect(ring.length).toBeLessThanOrEqual(MAX_ACTIVITY_ENTRIES);
+    }
+    expect(ring[ring.length - 1]!.d).toBe(cjk); // the newest line always survives
+  });
+
+  it("fitActivityRing keeps at least the newest entry even for a single large (astral emoji) line", async () => {
+    const ns = await didNoteNs(OWNER);
+    const key = await activitySlotKey("s");
+    const big = "🚀".repeat(120); // 120 astral emoji
+    const ring = fitActivityRing([], { t: 1, d: big }, ns, key, 1_700_000_000);
+    expect(ring.length).toBe(1);
+    expect(ring[0]!.d).toBe(big);
   });
 });

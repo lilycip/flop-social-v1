@@ -251,6 +251,17 @@ describe("wake throttle: the last-think timestamp (single row, harness-written)"
     await m.setLastThink(2000);
     expect(await m.getLastThink()).toBe(2000);
   });
+});
+
+describe("the durable introduced flag (introduce-once, non-evictable)", () => {
+  it("is false before any say, true after setIntroduced, and stays true (idempotent)", async () => {
+    const m = mem();
+    expect(await m.getIntroduced()).toBe(false);
+    expect((await m.setIntroduced()).stored).toBe(true);
+    expect(await m.getIntroduced()).toBe(true);
+    await m.setIntroduced();
+    expect(await m.getIntroduced()).toBe(true);
+  });
 
   it("refuses a non-positive / non-number value and keeps the last good one", async () => {
     const m = mem();

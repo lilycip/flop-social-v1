@@ -29,7 +29,7 @@ function fakeCaps(
     },
     async emit(req) {
       rec.emits.push(req);
-      return { status: "OK", shape: (req as { shape: "kibble" | "note" | "say" }).shape, did: "did:key:z", signature: "s", nonce: "1", room: "r", text: "t", delivered: true, confirmed: true };
+      return { status: "OK", shape: (req as { shape: "kibble" | "note" | "say" }).shape, did: "did:key:z", signature: "s", nonce: "1", room: "r", text: "t", delivered: true, confirmed: true, sent: true };
     },
     async research(url: string) {
       rec.research.push(url);
@@ -63,7 +63,7 @@ function fakeCaps(
 const OK = (text: string): ModelResult => ({ status: "OK", text });
 
 function ctx(over: Partial<PassContext> = {}): PassContext {
-  return { nick: "agent", board: [], mailbox: [], rooms: [], freshJobIds: [], learnings: [], handoff: null, recent: [], tasks: [], ...over };
+  return { nick: "agent", board: [], mailbox: [], rooms: [], freshJobIds: [], learnings: [], handoff: null, recent: [], tasks: [], introduced: false, ...over };
 }
 const job = (id: string, raw?: string): BoardItem => ({ id, raw: raw ?? JSON.stringify({ job_id: id, ask: "do a thing" }) });
 

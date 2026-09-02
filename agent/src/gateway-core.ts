@@ -13,6 +13,7 @@ export const SignStatus = {
   GATE_INVALID: "GATE_INVALID", // the action could not be built from the given fields
   GATE_FORBIDDEN: "GATE_FORBIDDEN", // a give-away namespace (room-owners/room-allow/d-)
   GATE_INTERNAL: "GATE_INTERNAL", // unexpected internal error (never echoes anything)
+  GATE_DUP: "GATE_DUP", // harness-side: an identical emit already went out this wake; not re-posted
 } as const;
 export type SignStatusValue = (typeof SignStatus)[keyof typeof SignStatus] | StatusValue;
 
@@ -20,6 +21,9 @@ export interface GovernorLike {
   authorize(req: AuthorizeRequest): Promise<AuthorizeResult>;
   reserveModel(now: number): Promise<AuthorizeResult>;
   applySteerGrant(grant: unknown, now: number): Promise<{ status: string }>;
+  // True only when a verified, unexpired, un-revoked, NON-empty-allow grant is active. A STOP (empty
+  // allow) or no grant returns false, so callers can make STOP mean dark without consuming any counter.
+  hasLiveGrant(now: number): Promise<boolean>;
 }
 
 export interface GatewayCtx {

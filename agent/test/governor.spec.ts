@@ -87,6 +87,17 @@ describe("pinning a grant", () => {
     bad.signature = (bad.signature[0] === "A" ? "B" : "A") + bad.signature.slice(1);
     expect((await g.pinGrant(bad, 1500)).status).toBe(Status.GATE_NO_GRANT);
   });
+
+  it("hasLiveGrant: false with no grant, true for a permissive grant, false for an empty-allow STOP or after revoke (kill-switch coverage of unmetered signing)", async () => {
+    const g = await configured();
+    expect(await g.hasLiveGrant(1500)).toBe(false); // nothing pinned
+    await g.pinGrant(G.main, 1500);
+    expect(await g.hasLiveGrant(1500)).toBe(true); // permissive, non-empty allow
+    await g.revoke(G.main.grant_id);
+    expect(await g.hasLiveGrant(1500)).toBe(false); // revoked -> not live
+    await g.pinGrant(G.stop, 1500); // empty-allow stop (a distinct grant_id, not in the revoked set)
+    expect(await g.hasLiveGrant(1500)).toBe(false); // a STOP is never "live"
+  });
 });
 
 describe("class and ceiling enforcement", () => {

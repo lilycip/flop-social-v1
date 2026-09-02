@@ -136,16 +136,42 @@ describe("makeProtocolIO.sendSigned (the previously-missing wire-send + read-bac
 
   const noSleep = { sleep: async () => {} };
 
-  it("posts a say via the say-signed GET path (NOT a POST) and CONFIRMS it by reading it back", async () => {
-    const { fetch, seen } = scriptedFetch([
-      ["/say-signed", "posted", 200],
-      ["?format=json", { messages: [{ from: "did:key:z6MkX", nonce: "1700", text: "hello world", seq: 5 }], last_seq: 5 }],
-    ]);
-    const out = await makeProtocolIO(fetch, "n", noSleep).sendSigned(sayResult);
+  it("posts a say via the say-signed GET path (NOT a POST) and CONFIRMS a message NEWER than the pre-write tail", async () => {
+    const seen: string[] = [];
+    let roomReads = 0;
+    const impl = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      seen.push(url);
+      if (url.includes("/say-signed")) return new Response("posted", { status: 200 });
+      roomReads += 1;
+      // read 1 = the pre-write baseline (tail at seq 4, our message not there yet); after the write
+      // our message lands at seq 5, strictly newer than the baseline.
+      const body = roomReads === 1
+        ? { messages: [], last_seq: 4 }
+        : { messages: [{ from: "did:key:z6MkX", nonce: "1700", text: "hello world", seq: 5 }], last_seq: 5 };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as unknown as typeof fetch;
+    const out = await makeProtocolIO(impl, "n", noSleep).sendSigned(sayResult);
     expect(out.sent).toBe(true);
     expect(out.confirmed).toBe(true);
     const writeUrl = seen.find((u) => u.includes("say-signed"))!;
     expect(writeUrl).toBe("https://technocore.chat/r/lobby/say-signed/did%3Akey%3Az6MkX/SIG/1700/hello%20world");
+  });
+
+  it("does NOT confirm on a STALE identical prior message (never-false-positive: same text, not newer than the tail)", async () => {
+    // The room already holds an identical message from us at seq 5 (from an earlier wake). We post
+    // again; the host returns 200 but drops it. A bare text match on the OLD message must NOT confirm
+    // the write that never landed - the exact false-positive this guards against.
+    const impl = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/say-signed")) return new Response("posted", { status: 200 });
+      return new Response(JSON.stringify({
+        messages: [{ from: "did:key:z6MkX", nonce: "1699", text: "hello world", seq: 5 }], last_seq: 5,
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const out = await makeProtocolIO(impl, "n", noSleep).sendSigned(sayResult);
+    expect(out.sent).toBe(true);
+    expect(out.confirmed).toBe(false);
   });
 
   it("reports confirmed:false when the read-back never shows our message (a 200 is not persistence)", async () => {
@@ -158,19 +184,49 @@ describe("makeProtocolIO.sendSigned (the previously-missing wire-send + read-bac
     expect(out.confirmed).toBe(false);
   });
 
+  it("a matching-TEXT read-back with NO seq does NOT confirm (novelty must be PROVEN, not assumed)", async () => {
+    // The host returns our text but omits seq and gives a different nonce. Without a proven-newer seq
+    // and without our exact nonce, this could be a stale prior post, so it must not confirm.
+    const impl = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/say-signed")) return new Response("posted", { status: 200 });
+      return new Response(JSON.stringify({
+        messages: [{ from: "did:key:z6MkX", nonce: "999", text: "hello world" }], last_seq: 4,
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const out = await makeProtocolIO(impl, "n", noSleep).sendSigned(sayResult);
+    expect(out.sent).toBe(true);
+    expect(out.confirmed).toBe(false);
+  });
+
+  it("an EXACT nonce echo confirms even with no seq (positive proof stands on its own)", async () => {
+    const impl = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/say-signed")) return new Response("posted", { status: 200 });
+      return new Response(JSON.stringify({
+        messages: [{ from: "did:key:z6MkX", nonce: "1700", text: "hello world" }], last_seq: 4,
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const out = await makeProtocolIO(impl, "n", noSleep).sendSigned(sayResult);
+    expect(out.confirmed).toBe(true);
+  });
+
   it("CONFIRMS on a later read-back when the write landed but lagged (retry recovers a false-negative)", async () => {
     let reads = 0;
     const laggy = (async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.includes("/say-signed")) return new Response("posted", { status: 200 });
       reads += 1;
-      const messages = reads >= 2 ? [{ from: "did:key:z6MkX", nonce: "1700", text: "hello world", seq: 5 }] : [];
-      return new Response(JSON.stringify({ messages, last_seq: 5 }), { status: 200 });
+      // read 1 = pre-write baseline (tail 4). Our message (seq 5, newer) only appears from read 3 on.
+      if (reads === 1) return new Response(JSON.stringify({ messages: [], last_seq: 4 }), { status: 200 });
+      const landed = reads >= 3;
+      const messages = landed ? [{ from: "did:key:z6MkX", nonce: "1700", text: "hello world", seq: 5 }] : [];
+      return new Response(JSON.stringify({ messages, last_seq: landed ? 5 : 4 }), { status: 200 });
     }) as unknown as typeof fetch;
     const out = await makeProtocolIO(laggy, "n", noSleep).sendSigned(sayResult);
     expect(out.sent).toBe(true);
     expect(out.confirmed).toBe(true);
-    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(reads).toBeGreaterThanOrEqual(3);
   });
 
   it("a non-2xx write is sent:false (the action did not post)", async () => {

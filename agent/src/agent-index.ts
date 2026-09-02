@@ -36,6 +36,8 @@ function buildMemory(env: AgentEnv): MemoryClient {
     recordTaskRun: (taskId) => stub.recordTaskRun(taskId),
     getLastThink: () => stub.getLastThink(),
     setLastThink: (nowMs) => stub.setLastThink(nowMs),
+    getIntroduced: () => stub.getIntroduced(),
+    setIntroduced: () => stub.setIntroduced(),
   };
 }
 function mailRaw(messages: readonly unknown[]): MailItem[] {
@@ -71,9 +73,28 @@ async function sendSignedWire(
       if (!room || text == null) return { sent: false, confirmed: false, detail: "bad-shape" };
       const nonce = result.nonce;
       writeUrl = urlSaySigned(room, result.did, result.signature, nonce, text);
+      // Capture the room tail BEFORE writing, so confirm only accepts a message that arrived AFTER our
+      // write - never a stale identical prior post, which would confirm a write that never landed.
+      // `since` also bounds the read to the few new messages, so a busy room past
+      // the 200-cap cannot silently hide our own message at the tail.
+      let beforeSeq: number | null = null;
+      try {
+        beforeSeq = (await readRoomWire(netFetch, room)).lastSeq;
+      } catch {
+        beforeSeq = null;
+      }
       confirm = async () => {
-        const r = await readRoomWire(netFetch, room);
-        return r.messages.some((m) => m.from === result.did && (m.nonce != null ? m.nonce === String(nonce) : m.text === text));
+        const r = await readRoomWire(netFetch, room, beforeSeq != null ? { since: beforeSeq } : undefined);
+        return r.messages.some((m) => {
+          if (m.from !== result.did) return false;
+          // Require POSITIVE proof, never the ABSENCE of a disqualifier: our exact echoed nonce is
+          // proof on its own; otherwise the message must be PROVABLY newer than the pre-write tail
+          // (both baseline and seq present) AND match our text. A missing seq proves nothing, so it can
+          // no longer let a stale identical prior post confirm a write that never landed.
+          const nonceEcho = m.nonce != null && m.nonce === String(nonce);
+          const provenNewer = beforeSeq != null && m.seq != null && m.seq > beforeSeq;
+          return nonceEcho || (provenNewer && m.text === text);
+        });
       };
     } else {
       const ns = result.namespace;
@@ -210,6 +231,7 @@ function buildDeps(env: AgentEnv): PassDeps {
       complete: (prompt) => env.GATEWAY.complete(prompt),
       tasks: () => env.GATEWAY.tasks(),
       config: () => env.GATEWAY.config(),
+      noteActivity: (digest: string) => env.GATEWAY.noteActivity(digest),
     },
     memory: buildMemory(env),
     wakeDefaultMinutes: parseWakeDefault(env.WAKE_MINUTES),
